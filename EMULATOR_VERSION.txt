@@ -1,4 +1,4 @@
-emu/ is joyrider3774/chgame_emulator (MIT, see emu/LICENSE), copied unchanged (no .git).
+emu/ is joyrider3774/chgame_emulator (MIT, see emu/LICENSE), copied unchanged (no .git). The public app and core repositories leave out its CLAUDE.md, web/, the web and ROM build scripts and two prebuilt test binaries.
 
 repository  https://github.com/joyrider3774/chgame_emulator
 commit      bb9baf5cbf15c7886574eaf1137ddb33612370e7

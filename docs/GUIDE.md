@@ -5,7 +5,7 @@ Nova, with the **CHGame Player** app, alone or started from the ES-DE game list:
 
 | | What it is | Best for |
 |---|---|---|
-| **A. CHGame Player** | a small app of its own (`CHGamePlayer-0.20.apk`) | the simplest setup |
+| **A. CHGame Player** | a small app of its own (`CHGamePlayer-0.29.apk`) | the simplest setup |
 | **B. ES-DE** | a game-list front end that starts the app for you | one menu for every system you play |
 
 The RetroArch (libretro) core for the same emulator is a separate project:
@@ -20,7 +20,7 @@ Release file:
 
 | File | For |
 |---|---|
-| `CHGamePlayer-0.20.apk` | A, and B |
+| `CHGamePlayer-0.29.apk` | A, and B |
 | `frontends/es_systems.xml`, `frontends/es_find_rules.xml` | B |
 
 Your games:
@@ -38,7 +38,7 @@ a microSD card, or any file-sharing app you already use. The Retroid's internal 
 ## A. CHGame Player (the app)
 
 ### Install
-1. Copy `CHGamePlayer-0.20.apk` to the Retroid, for example into `Download`.
+1. Copy `CHGamePlayer-0.29.apk` to the Retroid, for example into `Download`.
 2. Open it in the Retroid's file manager. The first time, Android asks you to allow installs
    from that file manager: allow it, go back, and tap the APK again. Then tap **Install**.
 3. *CHGame* now appears with your apps.
@@ -54,7 +54,7 @@ give it.
 3. Open CHGame Player. The first time it asks for your games folder: press **Choose folder**,
    find the folder in Android's picker, open it, and press **Use this folder**, then **Allow**.
 
-![The game list](preview/app-0.10_list.png)
+![The game list](howto/01-list.png)
 
 The list's sections, from the top:
 - **★ Favourites**: the games you've starred (Y);
@@ -88,8 +88,6 @@ preview* also sets *Video and sound* (the default), *Video only* or *Off*.
 | Y | long press → *Add to favourites* | star the game (and again to unstar it) |
 | X | long press → *Hide* | hide the game (and again to show it) |
 | SELECT | the ⚙ gear | Options |
-
-![A port selected](preview/app-0.9-port_list.png)
 
 The app also searches subfolders, up to 4 levels deep, so a copy of a whole CHGame SD card
 works too. To change the folder later: *Options → Games folder*. The app then gives up its
@@ -130,7 +128,7 @@ copying it in.
 SELECT on the list (or the ⚙ gear) opens **Options**, laid out like Android's own Settings.
 B or BACK goes back to the list.
 
-![Options](preview/app-0.7_options.png)
+![Options](howto/02-options.png)
 
 | Section | Option | |
 |---|---|---|
@@ -193,7 +191,6 @@ The picture is drawn at the largest whole-number size that fits: 7x (896 pixels)
   - **Save states**: slots 1 to 4 and the resume point, each with when it was saved; press one
     to delete it (you're asked first), or *Delete all states and the resume point*. Saving and
     loading states is done in the game, from its BACK menu.
-  ![The Saves page](preview/app-0.15_saves.png)
   `.sav` and `.state` files in your folder aren't copied onto the emulated SD card.
 - **The SD card:** when a game starts, the app copies the `.DAT` files (everything except the
   `.CHG` games) from your folder into its own private SD card. When you leave the game, it

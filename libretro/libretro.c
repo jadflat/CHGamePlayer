@@ -192,7 +192,7 @@ static const char *base_name(const char *path)
     return s ? s + 1 : path;
 }
 
-/* The .DAT names a program asks for, found the way android/java/.../Cart.java
+/* The .DAT names a program asks for, found the way the CHGame Player app
    finds them: NAME.DAT with NAME of 1-8 of [A-Z0-9_], not part of a longer
    word. A .CHG (CHG1) is searched over its program only, from byte 512 for the
    length at 0x10; any other file over all of its bytes. */
