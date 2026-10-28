@@ -50,13 +50,14 @@ import java.util.concurrent.Executors;
  * Options, where everything else lives.
  */
 public class MainActivity extends Activity {
-    static final String VERSION = "0.32";
+    static final String VERSION = "0.34";
     static final String PREFS = "chgame";
 
     private SharedPreferences prefs;
     private TextView count, artTitle, artInfo, artPort;
     private Preview preview;
     private TextView mute;
+    private View[] headIcons;                                   /* the header buttons the pad can reach, left to right */
     private ArtView art;
     private ListView list;
     private View listPane, emptyPane;
@@ -74,18 +75,18 @@ public class MainActivity extends Activity {
     private int shown = -1;
     private boolean gridMode;                                   /* the list as cells, not rows (Options: Layout) */
     private int gridCols = 2;                                   /* cells in a grid row */
+    private LinearLayout root, left, right;                     /* the panes: list (left), preview (right) */
 
     @Override
     protected void onCreate(Bundle saved) {
         super.onCreate(saved);
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
 
-        LinearLayout root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.HORIZONTAL);
+        root = new LinearLayout(this);
         root.setBackgroundColor(Ui.BG);
 
         /* left: header and the list (or, with no folder yet, the first step) */
-        LinearLayout left = new LinearLayout(this);
+        left = new LinearLayout(this);
         left.setOrientation(LinearLayout.VERTICAL);
         LinearLayout head = new LinearLayout(this);
         head.setOrientation(LinearLayout.HORIZONTAL);
@@ -111,24 +112,25 @@ public class MainActivity extends Activity {
         gear.setGravity(Gravity.CENTER);
         gear.setBackground(Ui.card(this, Color.TRANSPARENT, 24));
         gear.setContentDescription("Options");
-        gear.setFocusable(false);
+        gear.setFocusable(true);
         gear.setOnClickListener(v -> openOptions());
         /* search the titles (R3 or SEARCH on a pad) */
         TextView find = Ui.text(this, "🔍", 20, Ui.ON_SURFACE_VARIANT, Ui.REGULAR);
         find.setGravity(Gravity.CENTER);
         find.setBackground(Ui.card(this, Color.TRANSPARENT, 24));
         find.setContentDescription("Search the games");
-        find.setFocusable(false);
+        find.setFocusable(true);
         find.setOnClickListener(v -> search());
         head.addView(find, new LinearLayout.LayoutParams(Ui.dp(this, 48), Ui.dp(this, 48)));
         /* the preview's sound: on or muted (Options' "Video and sound" / "Video only") */
         mute = Ui.text(this, "", 22, Ui.ON_SURFACE_VARIANT, Ui.REGULAR);
         mute.setGravity(Gravity.CENTER);
         mute.setBackground(Ui.card(this, Color.TRANSPARENT, 24));
-        mute.setFocusable(false);
+        mute.setFocusable(true);
         mute.setOnClickListener(v -> toggleMute());
         head.addView(mute, new LinearLayout.LayoutParams(Ui.dp(this, 48), Ui.dp(this, 48)));
         head.addView(gear, new LinearLayout.LayoutParams(Ui.dp(this, 48), Ui.dp(this, 48)));
+        headIcons = new View[] { find, mute, gear };
         head.setPadding(Ui.dp(this, 4), 0, 0, Ui.dp(this, 12));
         left.addView(head);
 
@@ -167,10 +169,9 @@ public class MainActivity extends Activity {
         emptyPane = emptyState();
         body.addView(emptyPane);
         left.addView(body, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1));
-        root.addView(left, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1.15f));
 
         /* right: the selected game, large */
-        LinearLayout right = new LinearLayout(this);
+        right = new LinearLayout(this);
         right.setOrientation(LinearLayout.VERTICAL);
         right.setGravity(Gravity.CENTER_HORIZONTAL);
         right.setBackground(Ui.rounded(this, Ui.SURFACE, 28));
@@ -207,13 +208,45 @@ public class MainActivity extends Activity {
             hints.addView(Ui.chip(this, h[0], h[1]), lp);
         }
         right.addView(hints);
-        LinearLayout.LayoutParams rp = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1);
-        rp.setMargins(Ui.dp(this, 20), 0, 0, 0);
-        root.addView(right, rp);
+        applyOrientation();
 
         setContentView(root);
         Ui.edgeToEdge(this, root);
         preview = new Preview(this, b -> art.set(b));
+    }
+
+    @Override
+    public void onConfigurationChanged(android.content.res.Configuration c) {
+        super.onConfigurationChanged(c);
+        applyOrientation();
+    }
+
+    private boolean portrait() {
+        return getResources().getConfiguration().orientation == android.content.res.Configuration.ORIENTATION_PORTRAIT;
+    }
+
+    /** Landscape: the list left, the preview right. Portrait: the preview on top (square, whole-number scale), the list below. */
+    private void applyOrientation() {
+        boolean port = portrait();
+        root.setOrientation(port ? LinearLayout.VERTICAL : LinearLayout.HORIZONTAL);
+        root.removeAllViews();
+        art.square = port;
+        art.fill = !port;
+        if (port) {
+            art.setLayoutParams(new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT));
+            LinearLayout.LayoutParams rp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT);
+            rp.setMargins(0, 0, 0, Ui.dp(this, 20));
+            root.addView(right, rp);
+            root.addView(left, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1));
+        } else {
+            art.setLayoutParams(new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1));
+            root.addView(left, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1.15f));
+            LinearLayout.LayoutParams rp = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1);
+            rp.setMargins(Ui.dp(this, 20), 0, 0, 0);
+            root.addView(right, rp);
+        }
     }
 
     /** No folder yet: one clear first step. */
@@ -476,9 +509,9 @@ public class MainActivity extends Activity {
         }
     }
 
-    /** Grid mode's columns: about 200 dp a cell, at least two. */
+    /** Grid mode's columns: about 200 dp a cell, at least two; portrait: about 240 dp, at least one. */
     private int colsFor(int px) {
-        return Math.max(2, px / Ui.dp(this, 200));
+        return portrait() ? Math.max(1, px / Ui.dp(this, 240)) : Math.max(2, px / Ui.dp(this, 200));
     }
 
     /** The list's width, or half the screen before the list is laid out. */
@@ -830,6 +863,11 @@ public class MainActivity extends Activity {
     @Override
     public boolean dispatchKeyEvent(KeyEvent ev) {
         int code = ev.getKeyCode();
+        if (headFocused() >= 0 && headKey(ev)) return true;
+        if ((code == KeyEvent.KEYCODE_DPAD_UP) && ev.getAction() == KeyEvent.ACTION_DOWN && atTop()) {
+            focusHead(1);
+            return true;
+        }
         boolean dpad = code == KeyEvent.KEYCODE_DPAD_UP || code == KeyEvent.KEYCODE_DPAD_DOWN
                 || code == KeyEvent.KEYCODE_DPAD_LEFT || code == KeyEvent.KEYCODE_DPAD_RIGHT;
         if (gridMode && shown >= 0 && dpad) {
@@ -837,6 +875,51 @@ public class MainActivity extends Activity {
             return true;
         }
         return super.dispatchKeyEvent(ev);
+    }
+
+    /** Index of the focused header icon, or -1. */
+    private int headFocused() {
+        if (headIcons == null) return -1;
+        for (int i = 0; i < headIcons.length; i++) if (headIcons[i].hasFocus()) return i;
+        return -1;
+    }
+
+    /** Focuses a visible header icon, trying from index 0 (dir 1) or the end (dir -1). */
+    private void focusHead(int dir) {
+        for (int i = dir > 0 ? 0 : headIcons.length - 1; i >= 0 && i < headIcons.length; i += dir)
+            if (headIcons[i].getVisibility() == View.VISIBLE) { headIcons[i].requestFocus(); return; }
+    }
+
+    /** True when UP from the shown game has nowhere further to go in the list. */
+    private boolean atTop() {
+        if (shownRow < 0 || list.getVisibility() != View.VISIBLE) return false;
+        for (int r = shownRow - 1; r >= 0; r--) if (gameAt(r) >= 0 || cellsAt(r) != null) return false;
+        return true;
+    }
+
+    /** D-pad and A while a header icon has focus. */
+    private boolean headKey(KeyEvent ev) {
+        int code = ev.getKeyCode();
+        int i = headFocused();
+        boolean down = ev.getAction() == KeyEvent.ACTION_DOWN;
+        switch (code) {
+            case KeyEvent.KEYCODE_DPAD_LEFT: case KeyEvent.KEYCODE_DPAD_RIGHT: {
+                if (!down) return true;
+                int dir = code == KeyEvent.KEYCODE_DPAD_LEFT ? -1 : 1;
+                for (int k = i + dir; k >= 0 && k < headIcons.length; k += dir)
+                    if (headIcons[k].getVisibility() == View.VISIBLE) { headIcons[k].requestFocus(); break; }
+                return true;
+            }
+            case KeyEvent.KEYCODE_DPAD_DOWN:
+                if (down) list.requestFocus();
+                return true;
+            case KeyEvent.KEYCODE_DPAD_UP:
+                return true;
+            case KeyEvent.KEYCODE_BUTTON_A: case KeyEvent.KEYCODE_ENTER: case KeyEvent.KEYCODE_DPAD_CENTER:
+                if (down && ev.getRepeatCount() == 0) headIcons[i].performClick();
+                return true;
+        }
+        return false;
     }
 
     /** The games of a grid row, or null when the row is not one. */
@@ -1059,6 +1142,7 @@ public class MainActivity extends Activity {
      *  that fits, or with fill as big as fits. */
     static final class ArtView extends View {
         boolean fill;
+        boolean square;             /* as tall as wide (portrait's preview) */
         private Bitmap bmp;
         private final Paint paint = new Paint();
         private final Rect src = new Rect(0, 0, 128, 128), dst = new Rect();
@@ -1081,6 +1165,17 @@ public class MainActivity extends Activity {
             if (b == bmp) return;
             bmp = b;
             invalidate();
+        }
+
+        @Override
+        protected void onMeasure(int wSpec, int hSpec) {
+            if (!square) {
+                super.onMeasure(wSpec, hSpec);
+                return;
+            }
+            int w = View.MeasureSpec.getSize(wSpec);
+            int cap = getRootView().getHeight() * 2 / 5;     /* a short portrait screen keeps room for the list */
+            setMeasuredDimension(w, cap >= 128 ? Math.min(w, cap) : w);
         }
 
         @Override

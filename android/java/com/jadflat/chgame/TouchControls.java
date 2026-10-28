@@ -29,7 +29,8 @@ final class TouchControls extends View {
     private final RectF rect = new RectF();
     private final Path cross = new Path();
 
-    /* layout in pixels, made in onSizeChanged */
+    /* layout in pixels, made in onSizeChanged; unit scales the sizes (1 except a small portrait space) */
+    private float unit = 1f;
     private float dpadX, dpadY, dpadR, arm, dead, slop;
     private float aX, aY, bX, bY, btnR;
     private float pillW, pillH, pillY, selX, startX;
@@ -48,6 +49,11 @@ final class TouchControls extends View {
         text.setTextAlign(Paint.Align.CENTER);
     }
 
+    /** A size in dp, scaled by unit. */
+    private float dp(float v) {
+        return Ui.dp(getContext(), v) * unit;
+    }
+
     /** The Native button bits held now (the OR of every finger). */
     int buttons() {
         return held;
@@ -55,30 +61,32 @@ final class TouchControls extends View {
 
     @Override
     protected void onSizeChanged(int w, int h, int ow, int oh) {
-        Context c = getContext();
         float W = w, H = h;
-        dpadR = Ui.dp(c, 66);
-        arm = Ui.dp(c, 21);
-        dead = Ui.dp(c, 12);
-        slop = Ui.dp(c, 10);
-        dpadX = Ui.dp(c, 20) + dpadR;
-        dpadY = H - Ui.dp(c, 20) - dpadR;
+        /* portrait: the pad sits in the space under the picture, so its parts shrink to fit it */
+        unit = getResources().getConfiguration().orientation == android.content.res.Configuration.ORIENTATION_PORTRAIT
+                ? Math.min(1f, Math.min(W / Ui.dp(getContext(), 340), H / Ui.dp(getContext(), 200))) : 1f;
+        dpadR = dp(66);
+        arm = dp(21);
+        dead = dp(12);
+        slop = dp(10);
+        dpadX = dp(20) + dpadR;
+        dpadY = H - dp(20) - dpadR;
 
-        btnR = Ui.dp(c, 30);
-        aX = W - Ui.dp(c, 22) - btnR;                   /* A: to the right and higher */
-        aY = H - Ui.dp(c, 22) - btnR - Ui.dp(c, 40);
-        bX = aX - Ui.dp(c, 68);                         /* B: lower-left of A */
-        bY = aY + Ui.dp(c, 40);
+        btnR = dp(30);
+        aX = W - dp(22) - btnR;                         /* A: to the right and higher */
+        aY = H - dp(22) - btnR - dp(40);
+        bX = aX - dp(68);                               /* B: lower-left of A */
+        bY = aY + dp(40);
 
-        pillW = Ui.dp(c, 64);
-        pillH = Ui.dp(c, 22);
-        pillY = H - Ui.dp(c, 26);
-        selX = W / 2 - Ui.dp(c, 50);
-        startX = W / 2 + Ui.dp(c, 50);
+        pillW = dp(64);
+        pillH = dp(22);
+        pillY = H - dp(26);
+        selX = W / 2 - dp(50);
+        startX = W / 2 + dp(50);
 
-        line.setStrokeWidth(Ui.dp(c, 2));
-        textBig = Ui.dp(c, 18);
-        textSmall = Ui.dp(c, 10);
+        line.setStrokeWidth(dp(2));
+        textBig = dp(18);
+        textSmall = dp(10);
 
         cross.reset();                                  /* the d-pad's outline, one plus shape */
         float x = dpadX, y = dpadY, r = dpadR, h2 = arm;

@@ -116,15 +116,20 @@ abstract class Page extends Activity {
             TextView chevron = Ui.text(this, "›", 24, Ui.OUTLINE, Ui.REGULAR);
             chevron.setPadding(Ui.dp(this, 12), 0, 0, 0);
             r.addView(chevron);
-            r.setBackground(Ui.card(this, android.graphics.Color.TRANSPARENT, 0));
-            r.setFocusable(true);
             r.setClickable(true);
             final int index = rows.size();
+            r.setBackground(Ui.card(this, android.graphics.Color.TRANSPARENT, 0));
+            r.setFocusable(true);
             rows.add(r);
             r.setOnClickListener(v -> {
                 focusRow = index;
                 action.run();
             });
+        }
+        if (action == null) {
+            /* information rows take the pad's focus too, so the page can scroll to its last lines */
+            r.setBackground(Ui.card(this, android.graphics.Color.TRANSPARENT, 0));
+            r.setFocusable(true);
         }
         card.addView(r, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT));

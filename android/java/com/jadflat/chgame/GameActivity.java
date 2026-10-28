@@ -99,7 +99,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         view = new SurfaceView(this);
         view.getHolder().addCallback(this);
-        view.setOnClickListener(v -> { if (touch.getVisibility() != View.VISIBLE) menu(); });   /* with the touch pad: top centre only */
+        view.setOnClickListener(v -> { if (portrait() || touch.getVisibility() != View.VISIBLE) menu(); });   /* landscape with the touch pad: top centre only */
         touch = new TouchControls(this);
         touch.setOnTouchListener((v, ev) -> {
             /* a tap at the top centre opens the menu; the pad still gets the touch (returns false) */
@@ -109,6 +109,8 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         FrameLayout frame = new FrameLayout(this);
         frame.addView(view);
         frame.addView(touch);
+        /* every size or turn: the pad goes where the portrait picture leaves room (the whole screen in landscape) */
+        frame.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> placeTouch(frame));
         setContentView(frame);
         SharedPreferences prefs = getSharedPreferences(MainActivity.PREFS, MODE_PRIVATE);
         String touchMode = Options.touch(prefs);
@@ -403,10 +405,10 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
             SurfaceHolder h = holder;
             Canvas c = h == null ? null : h.lockCanvas();
             if (c != null) {
-                /* the biggest whole-number scale that fits (or, with fill, the whole height), centred */
-                int side = Math.min(c.getWidth(), c.getHeight());
-                if (!fill) side = Math.max(1, side / 128) * 128;
-                int x = (c.getWidth() - side) / 2, y = (c.getHeight() - side) / 2;
+                /* the biggest whole-number scale that fits (or, with fill, the whole height), centred;
+                   in portrait, the top of the screen, as wide as it can be */
+                int side = pictureSide(c.getWidth(), c.getHeight());
+                int x = (c.getWidth() - side) / 2, y = portrait() ? 0 : (c.getHeight() - side) / 2;
                 if (bezel && (c.getWidth() - side) / 2 >= side / 3) {
                     /* the handheld's frame, with room for the pad and buttons beside the picture */
                     if (bezelBmp == null || bezelBmp.getWidth() != c.getWidth() || bezelBmp.getHeight() != c.getHeight())
@@ -676,9 +678,33 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
            only dropped here (the loop may be drawing it); surfaceDestroyed recycles it */
         String look = Options.look(getSharedPreferences(MainActivity.PREFS, MODE_PRIVATE));
         boolean scan = "scanlines".equals(look) || "crt".equals(look);
-        int side = Math.min(w, hh);
-        if (!fill) side = Math.max(1, side / 128) * 128;
+        int side = pictureSide(w, hh);
         scanBmp = scan ? buildScanlines(side, "crt".equals(look)) : null;
+    }
+
+    private boolean portrait() {
+        return getResources().getConfiguration().orientation == android.content.res.Configuration.ORIENTATION_PORTRAIT;
+    }
+
+    /** The picture's side for a w x h surface. Portrait: the widest whole-number scale (fit if under 1x). */
+    private int pictureSide(int w, int h) {
+        if (portrait()) {
+            int s = w >= 128 ? w / 128 * 128 : Math.min(w, h);
+            return s <= h ? s : Math.min(w, h);
+        }
+        int side = Math.min(w, h);
+        return fill ? side : Math.max(1, side / 128) * 128;
+    }
+
+    /** The touch pad: the whole screen in landscape; in portrait, the space under the picture. */
+    private void placeTouch(FrameLayout frame) {
+        int w = frame.getWidth(), h = frame.getHeight();
+        int top = portrait() ? pictureSide(w, h) : 0;
+        FrameLayout.LayoutParams old = (FrameLayout.LayoutParams) touch.getLayoutParams();
+        if (old != null && old.topMargin == top && old.height == h - top) return;   /* no change: no new layout */
+        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, h - top);
+        lp.topMargin = top;
+        touch.setLayoutParams(lp);
     }
     @Override public void surfaceDestroyed(SurfaceHolder h) {
         pauseGame();
