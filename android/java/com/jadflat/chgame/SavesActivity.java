@@ -1,8 +1,11 @@
 package com.jadflat.chgame;
 
 import android.content.UriPermission;
+import android.graphics.BitmapFactory;
 import android.net.Uri;
 import android.os.Bundle;
+import android.widget.ImageView;
+import android.widget.LinearLayout;
 
 import java.io.File;
 import java.io.IOException;
@@ -78,9 +81,9 @@ public class SavesActivity extends Page {
             File f = slots[i];
             final int n = i + 1;
             any |= f.isFile();
-            row("Slot " + n, f.isFile() ? "Saved " + Saves.describe(f) + " · press to delete" : "Empty",
+            slotRow("Slot " + n, f.isFile() ? "Saved " + Saves.describe(f) + " · press to delete" : "Empty", f,
                     f.isFile() ? () -> Saves.confirm(this, "Delete slot " + n + "?", () -> {
-                        f.delete();
+                        Saves.deleteState(f);
                         build();
                     }) : null);
         }
@@ -94,11 +97,30 @@ public class SavesActivity extends Page {
         if (any)
             row("Delete all states and the resume point", null, () ->
                     Saves.confirm(this, "Delete all " + Saves.SLOTS + " slots and the resume point of " + title + "?", () -> {
-                        for (File f : slots) f.delete();
+                        for (File f : slots) Saves.deleteState(f);
                         auto.delete();
                         build();
                     }));
         focus();
+    }
+
+    /**
+     * A row for a slot: its picture (64dp, from the state's .png) to the left of
+     * the text, when there is one. The picture goes into the row row() just made,
+     * so the row keeps its place in the section, its press and its focus.
+     */
+    private void slotRow(String title, String summary, File state, Runnable action) {
+        row(title, summary, action);
+        File pic = Saves.pictureFile(state);
+        if (action == null || !pic.isFile()) return;
+        LinearLayout section = (LinearLayout) page.getChildAt(page.getChildCount() - 1);
+        LinearLayout r = (LinearLayout) section.getChildAt(section.getChildCount() - 1);
+        ImageView img = new ImageView(this);
+        img.setImageBitmap(BitmapFactory.decodeFile(pic.getPath()));
+        img.setContentDescription(title + " picture");
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(Ui.dp(this, 64), Ui.dp(this, 64));
+        lp.setMargins(0, 0, Ui.dp(this, 16), 0);
+        r.addView(img, 0, lp);
     }
 
     private Uri tree() {

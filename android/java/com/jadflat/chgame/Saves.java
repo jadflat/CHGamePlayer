@@ -45,6 +45,17 @@ final class Saves {
         return Files.inside(d, base(gameFile) + "." + slot + ".state");
     }
 
+    /** The 128x128 picture saved beside a state, shown in the slot list. */
+    static File pictureFile(File state) {
+        return new File(state.getPath() + ".png");
+    }
+
+    /** A slot's state and its picture. */
+    static void deleteState(File state) {
+        state.delete();
+        pictureFile(state).delete();
+    }
+
     /** The resume point, written when a game is left. */
     static File autoFile(Activity a, String gameFile) throws IOException {
         File d = new File(a.getFilesDir(), "states");

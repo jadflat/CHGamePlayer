@@ -24,6 +24,7 @@ import android.view.ViewOutlineProvider;
 import android.widget.AbsListView;
 import android.widget.AdapterView;
 import android.widget.BaseAdapter;
+import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ListView;
@@ -34,6 +35,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
@@ -46,7 +48,7 @@ import java.util.concurrent.Executors;
  * Options, where everything else lives.
  */
 public class MainActivity extends Activity {
-    static final String VERSION = "0.23";
+    static final String VERSION = "0.24";
     static final String PREFS = "chgame";
 
     private SharedPreferences prefs;
@@ -107,6 +109,14 @@ public class MainActivity extends Activity {
         gear.setContentDescription("Options");
         gear.setFocusable(false);
         gear.setOnClickListener(v -> openOptions());
+        /* search the titles (R3 or SEARCH on a pad) */
+        TextView find = Ui.text(this, "🔍", 20, Ui.ON_SURFACE_VARIANT, Ui.REGULAR);
+        find.setGravity(Gravity.CENTER);
+        find.setBackground(Ui.card(this, Color.TRANSPARENT, 24));
+        find.setContentDescription("Search the games");
+        find.setFocusable(false);
+        find.setOnClickListener(v -> search());
+        head.addView(find, new LinearLayout.LayoutParams(Ui.dp(this, 48), Ui.dp(this, 48)));
         /* the preview's sound: on or muted (Options' "Video and sound" / "Video only") */
         mute = Ui.text(this, "", 22, Ui.ON_SURFACE_VARIANT, Ui.REGULAR);
         mute.setGravity(Gravity.CENTER);
@@ -182,7 +192,7 @@ public class MainActivity extends Activity {
         hints.setOrientation(LinearLayout.HORIZONTAL);
         hints.setGravity(Gravity.CENTER);
         hints.setPadding(0, Ui.dp(this, 10), 0, 0);
-        for (String[] h : new String[][] { { "A", "Play" }, { "Y", "Favourite" }, { "X", "Hide" } }) {
+        for (String[] h : new String[][] { { "A", "Play" }, { "Y", "Favourite" }, { "X", "Hide" }, { "L2/R2", "Letter" } }) {
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT);
             lp.setMargins(Ui.dp(this, 4), 0, Ui.dp(this, 4), 0);
@@ -340,10 +350,18 @@ public class MainActivity extends Activity {
             }
             games.add(e);
         }
-        /* CHGame originals first, then ports; by title in each */
+        /* CHGame originals first, then ports; in each, by the chosen sort (name, most played, newest file) */
+        String sort = Options.sort(prefs);
         Collections.sort(games, (a, b) -> {
             int s = Boolean.compare(isPort(a), isPort(b));
             if (s != 0) return s;
+            if ("played".equals(sort)) {
+                int k = Long.compare(Stats.time(this, fileName(b)), Stats.time(this, fileName(a)));
+                if (k != 0) return k;
+            } else if ("added".equals(sort)) {
+                int k = Long.compare(b.modified, a.modified);
+                if (k != 0) return k;
+            }
             int c = displayTitle(a).compareToIgnoreCase(displayTitle(b));
             return c != 0 ? c : a.path.compareToIgnoreCase(b.path);
         });
@@ -404,6 +422,63 @@ public class MainActivity extends Activity {
 
     private boolean headerAbove(int row) {
         return row > 0 && gameAt(row - 1) < 0;
+    }
+
+    /** Moves the selection to the game at pos, its section's name kept in view. */
+    private void goTo(int pos) {
+        int row = rowOf(pos);
+        list.setSelectionFromTop(row, headerAbove(row) ? Ui.dp(this, 40) : 0);
+        select(pos, row);
+    }
+
+    /** The first letter of a game's title, upper case; '#' for a title that starts with no letter. */
+    private char letterOf(int pos) {
+        String t = displayTitle(games.get(pos));
+        char c = t.isEmpty() ? '#' : Character.toUpperCase(t.charAt(0));
+        return Character.isLetter(c) ? c : '#';
+    }
+
+    /** L2 (dir -1) or R2 (dir 1): to the first game of the previous or next letter. */
+    private void jumpLetter(int dir) {
+        if (shown < 0 || games.isEmpty()) return;
+        char from = letterOf(shown);
+        int j = shown + dir;
+        while (j >= 0 && j < games.size() && letterOf(j) == from) j += dir;
+        if (j < 0 || j >= games.size()) return;
+        char to = letterOf(j);
+        /* going back, step to the first game of that letter, not its last */
+        while (j - dir >= 0 && j - dir < games.size() && letterOf(j - dir) == to) j -= dir;
+        goTo(j);
+        Saves.toast(this, String.valueOf(to));
+    }
+
+    /** Asks for part of a title, then selects the first game that has it. */
+    private void search() {
+        if (games.isEmpty()) return;
+        EditText field = new EditText(this);
+        field.setSingleLine(true);
+        field.setHint("Part of a title");
+        field.setPadding(Ui.dp(this, 24), Ui.dp(this, 16), Ui.dp(this, 24), Ui.dp(this, 8));
+        new android.app.AlertDialog.Builder(this, Ui.dialogTheme())
+                .setTitle("Search the games")
+                .setView(field)
+                .setPositiveButton("OK", (d, w) -> findTitle(field.getText().toString()))
+                .setNegativeButton("Cancel", null)
+                .show();
+        field.requestFocus();
+    }
+
+    /** The first game whose title contains the text, in any case. */
+    private void findTitle(String text) {
+        String want = text.trim().toLowerCase(Locale.ROOT);
+        if (want.isEmpty()) return;
+        for (int i = 0; i < games.size(); i++) {
+            if (displayTitle(games.get(i)).toLowerCase(Locale.ROOT).contains(want)) {
+                goTo(i);
+                return;
+            }
+        }
+        Saves.toast(this, "No match");
     }
 
     private boolean previewing;
@@ -623,6 +698,15 @@ public class MainActivity extends Activity {
                 break;
             case KeyEvent.KEYCODE_BUTTON_L1:
                 toggleMute();
+                return true;
+            case KeyEvent.KEYCODE_BUTTON_L2:
+                jumpLetter(-1);
+                return true;
+            case KeyEvent.KEYCODE_BUTTON_R2:
+                jumpLetter(1);
+                return true;
+            case KeyEvent.KEYCODE_BUTTON_THUMBR: case KeyEvent.KEYCODE_SEARCH:
+                search();
                 return true;
             case KeyEvent.KEYCODE_BUTTON_SELECT: case KeyEvent.KEYCODE_MENU: case KeyEvent.KEYCODE_BUTTON_MODE:
                 openOptions();

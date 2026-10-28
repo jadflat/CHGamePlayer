@@ -72,6 +72,9 @@ public class OptionsActivity extends Page {
                         + ". The selected game runs in the picture's place after a moment",
                 () -> pick("Live preview", Options.PREVIEW_NAMES, indexOf(Options.PREVIEWS, Options.preview(prefs)),
                         i -> prefs.edit().putString("preview", Options.PREVIEWS[i]).apply()));
+        row("Sort games", Options.SORT_NAMES[indexOf(Options.SORTS, Options.sort(prefs))],
+                () -> pick("Sort games", Options.SORT_NAMES, indexOf(Options.SORTS, Options.sort(prefs)),
+                        i -> prefs.edit().putString("sort", Options.SORTS[i]).apply()));
 
         section("Playing");
         row("Resume where you left off", Options.RESUME_NAMES[indexOf(Options.RESUMES, Options.resume(prefs))],

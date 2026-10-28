@@ -56,6 +56,13 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     private Map<String, Long> stamps;
     private String name;
     private String title;                   /* from the game's header, for the menu */
+    private volatile boolean rewinding;     /* REWIND held: the game runs back through the ring */
+    private static final int REWIND_EVERY = 30;   /* a state into the ring every this many frames of play */
+    private static final int REWIND_STEP = 15;    /* rewinding: one state back every this many frames */
+    private static final int REWIND_RING = 20;    /* the ring: about 10 seconds */
+    private int rewindHead, rewindCount;    /* the ring: next slot to write, slots in use */
+    private int rewindSteps;                /* steps back from the newest, while rewinding */
+    private int rewindTick;                 /* frames of play since the last state */
 
     @Override
     protected void onCreate(Bundle saved) {
@@ -96,6 +103,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
                 if (!g.isFile() || !Files.isGame(g.getName())) throw new java.io.IOException("no game " + name);
                 File saves = new File(getFilesDir(), "saves");
                 saves.mkdirs();
+                clearRewind();      /* a new run starts with an empty ring */
                 Options.apply(getSharedPreferences(MainActivity.PREFS, MODE_PRIVATE), name);
                 if (!Native.start(g.getPath(), new File(getFilesDir(), "sys").getPath(), saves.getPath(),
                         new File(getFilesDir(), "log.txt").getPath()))
@@ -283,17 +291,37 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         Paint lines = new Paint();
         lines.setColor(0x38000000);
         Rect src = new Rect(0, 0, 128, 128);
+        short[] silence = new short[800 * 2];   /* a frame's silence: paces the loop while rewinding */
+        boolean was = false;                    /* rewinding in the last loop */
+        int wait = 0;                           /* rewinding: frames until the next state back */
         while (running) {
-            /* fast-forward: several frames for each one shown, and only the last one's sound */
+            boolean back = rewinding;
             int n = 0;
-            for (int k = fast ? FAST_SPEED : 1; k > 0; k--) {
-                int tap = pressed;
-                if (tap != 0 && ++tapFrames >= TAP_FRAMES) {
-                    pressed = 0;
-                    tapFrames = 0;
+            if (back) {
+                /* rewind: a state back every REWIND_STEP frames, and one frame with no buttons to
+                   show it; the sound is muted (silence below) */
+                if (!was) wait = 0;
+                if (wait-- <= 0) {
+                    wait = REWIND_STEP - 1;
+                    if (rewindBack()) Native.frame(0, px, sound);
                 }
-                n = Native.frame(keys | stick | tap, px, sound);
+            } else {
+                if (rewindSteps > 0) rewindCommit();    /* let go: play on from the state loaded */
+                /* fast-forward: several frames for each one shown, and only the last one's sound */
+                for (int k = fast ? FAST_SPEED : 1; k > 0; k--) {
+                    int tap = pressed;
+                    if (tap != 0 && ++tapFrames >= TAP_FRAMES) {
+                        pressed = 0;
+                        tapFrames = 0;
+                    }
+                    n = Native.frame(keys | stick | tap, px, sound);
+                    if (++rewindTick >= REWIND_EVERY) {
+                        rewindTick = 0;
+                        rewindPut();
+                    }
+                }
             }
+            was = back;
             bmp.setPixels(px, 0, 128, 0, 0, 128, 128);
             System.arraycopy(px, 0, screen, 0, px.length);
             SurfaceHolder h = holder;
@@ -317,9 +345,48 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
                 h.unlockCanvasAndPost(c);
             }
             if (n > 0) track.write(sound, 0, n * 2);    /* blocks: the pace of the game */
+            else if (back) track.write(silence, 0, silence.length);
         }
+        if (rewindSteps > 0) rewindCommit();    /* stopped while rewinding: keep the state loaded */
         track.stop();
         track.release();
+    }
+
+    /* ---------------------------------------------------------------- */
+    /* Rewind: a ring of states, about 10 seconds (game thread only)      */
+    /* ---------------------------------------------------------------- */
+
+    /** A new run starts with an empty ring: the last run's states go. */
+    private void clearRewind() {
+        File dir = new File(getCacheDir(), "rewind");
+        File[] old = dir.listFiles();
+        if (old != null) for (File f : old) f.delete();
+        dir.mkdirs();
+    }
+
+    private File rewindFile(int i) {
+        return new File(getCacheDir(), "rewind/r" + ((i % REWIND_RING) + REWIND_RING) % REWIND_RING + ".st");
+    }
+
+    /** The state now goes into the ring, as the newest. */
+    private void rewindPut() {
+        if (!Native.saveState(rewindFile(rewindHead).getPath())) return;
+        rewindHead = (rewindHead + 1) % REWIND_RING;
+        if (rewindCount < REWIND_RING) rewindCount++;
+    }
+
+    /** One state further back; false at the oldest (or with none yet). */
+    private boolean rewindBack() {
+        if (rewindSteps >= rewindCount) return false;
+        rewindSteps++;
+        return Native.loadState(rewindFile(rewindHead - rewindSteps).getPath());
+    }
+
+    /** Rewind let go: play on from the state loaded, so the newer states are dropped. */
+    private void rewindCommit() {
+        rewindHead = (rewindHead - rewindSteps + 1 + REWIND_RING) % REWIND_RING;
+        rewindCount -= rewindSteps - 1;
+        rewindSteps = 0;
     }
 
     @Override public void surfaceCreated(SurfaceHolder h) { holder = h; if (hasWindowFocus()) resumeGame(); }
@@ -354,6 +421,11 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
             else if (ev.getAction() == KeyEvent.ACTION_UP) fast = false;
             return true;
         }
+        if (b == Keymap.REWIND) {
+            if (ev.getAction() == KeyEvent.ACTION_DOWN) rewinding = true;
+            else if (ev.getAction() == KeyEvent.ACTION_UP) rewinding = false;
+            return true;
+        }
         if (b == 0) return super.dispatchKeyEvent(ev);
         if (ev.getAction() == KeyEvent.ACTION_DOWN) { keys |= b; pressed |= b; tapFrames = 0; }
         else if (ev.getAction() == KeyEvent.ACTION_UP) keys &= ~b;
@@ -386,6 +458,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         keys = 0;
         stick = 0;
         fast = false;
+        rewinding = false;
         String[] items = { "Resume", "Save state…", "Load state…", "Save screenshot",
                 fromFrontEnd() ? "Quit" : "Quit to game list" };
         new AlertDialog.Builder(this, Ui.dialogTheme())
@@ -422,7 +495,9 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
                 .setItems(items, (d, i) -> {
                     pauseGame();    /* the machine must be still while it is copied */
                     if (save) {
-                        toast(Native.saveState(f[i].getPath()) ? "Saved to slot " + (i + 1) : "Save failed");
+                        boolean ok = Native.saveState(f[i].getPath());
+                        if (ok) slotPicture(f[i]);
+                        toast(ok ? "Saved to slot " + (i + 1) : "Save failed");
                     } else {
                         toast(f[i].isFile() && Native.loadState(f[i].getPath())
                                 ? "Loaded slot " + (i + 1) : "Slot " + (i + 1) + " is empty");
@@ -464,6 +539,16 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
             final String m = msg;
             runOnUiThread(() -> toast(m));
         }).start();
+    }
+
+    /** The screen as it is, beside a slot's state: the slot list shows it. The game is paused. */
+    private void slotPicture(File state) {
+        try (java.io.OutputStream out = new java.io.FileOutputStream(Saves.pictureFile(state))) {
+            Bitmap.createBitmap(screen, 128, 128, Bitmap.Config.ARGB_8888)
+                    .compress(Bitmap.CompressFormat.PNG, 100, out);
+        } catch (java.io.IOException e) {
+            /* no picture: the state is still saved */
+        }
     }
 
     /** Started by a front end such as ES-DE (LaunchActivity), not from this app's list. */

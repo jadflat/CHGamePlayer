@@ -73,15 +73,20 @@ abstract class Page extends Activity {
 
     /** A new section: its name, then a card its rows go into. */
     void section(String name) {
-        TextView t = Ui.text(this, name, 14, Ui.PRIMARY, Ui.MEDIUM);
-        t.setPadding(Ui.dp(this, 20), Ui.dp(this, 20), Ui.dp(this, 20), Ui.dp(this, 8));
-        page.addView(t);
+        boolean named = name != null && !name.isEmpty();
+        if (named) {
+            TextView t = Ui.text(this, name, 14, Ui.PRIMARY, Ui.MEDIUM);
+            t.setPadding(Ui.dp(this, 20), Ui.dp(this, 20), Ui.dp(this, 20), Ui.dp(this, 8));
+            page.addView(t);
+        }
         card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
         card.setBackground(Ui.rounded(this, Ui.SURFACE, 20));
         card.setClipToOutline(true);
-        page.addView(card, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        if (!named) lp.topMargin = Ui.dp(this, 16);  /* no heading: the gap comes from the card */
+        page.addView(card, lp);
     }
 
     /** A row in the current section; with no action it is just information. */

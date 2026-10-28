@@ -31,6 +31,7 @@ public class MapButtonsActivity extends Page {
             row(Keymap.NAMES[i], k.keyFor(Keymap.BUTTONS[i]), () -> capture(k, n));
         }
         section("");
+        row("Test buttons", "Press a key to see which button it presses", () -> testButtons(k));
         row("Reset to defaults", "The d-pad, A and B, START and SELECT as labelled, the menu on the home "
                 + "button, fast-forward on R1, Up also on Y (left)", () -> {
             k.defaults(false);
@@ -39,6 +40,28 @@ public class MapButtonsActivity extends Page {
         });
         row("The left stick always works as the d-pad, and BACK always opens the menu", null, null);
         focus();
+    }
+
+    /** Shows the name of each key pressed and the button it presses; Done or BACK closes. */
+    private void testButtons(Keymap k) {
+        AlertDialog d = new AlertDialog.Builder(this, Ui.dialogTheme())
+                .setTitle("Test buttons")
+                .setMessage("Press any button.")
+                .setNegativeButton("Done", null)
+                .create();
+        d.setOnKeyListener((dialog, code, ev) -> {
+            if (code == KeyEvent.KEYCODE_BACK) return false;  /* lets BACK dismiss the dialog */
+            if (ev.getAction() != KeyEvent.ACTION_DOWN || ev.getRepeatCount() > 0) return true;
+            int button = k.button(code);
+            String pressed = "nothing";
+            if (button != 0) {
+                for (int i = 0; i < Keymap.BUTTONS.length; i++)
+                    if (Keymap.BUTTONS[i] == button) pressed = Keymap.NAMES[i];
+            }
+            d.setMessage(Keymap.name(code) + " presses: " + pressed);
+            return true;
+        });
+        d.show();
     }
 
     /** Waits for the next key and gives it to button i; BACK cancels. */

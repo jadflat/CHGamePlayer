@@ -29,6 +29,11 @@ final class Options {
     /** sound, video or off: the selected game running in the list */
     static String preview(SharedPreferences p) { return p.getString("preview", "sound"); }
 
+    static final String[] SORTS = { "name", "played", "added" };
+    static final String[] SORT_NAMES = { "By name", "Most played", "Recently added" };
+    /** name, played or added: the order of games inside each section of the list */
+    static String sort(SharedPreferences p) { return p.getString("sort", "name"); }
+
     static Set<String> favourites(SharedPreferences p) {
         return new HashSet<>(p.getStringSet("favs", new HashSet<>()));
     }

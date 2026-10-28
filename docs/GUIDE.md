@@ -155,6 +155,10 @@ B or BACK goes back to the list.
   your games folder.
 - **Hold R1** to fast-forward (3x; the sound plays at normal pitch but skips). *Options → Map
   buttons* can move it to another button.
+- **Hold L2** to rewind, half a second a step, up to about 10 seconds back. *Options → Map
+  buttons* can move it.
+- In the list, **L2 / R2** jump to the previous or next letter, and **R3** or the 🔍 searches by
+  name. *Options → Sort games* sorts by name, most played or recently added.
 - **Long-press a game** in the list for: Play, favourite, Hide, Saves, and **About this game**
   (full credits, version, port, description, licence, file and play time). Save and load
   offer 4 slots per game, each showing when it was saved.
