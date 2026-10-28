@@ -1,0 +1,8 @@
+emu/ is joyrider3774/chgame_emulator (MIT, see emu/LICENSE), copied unchanged (no .git).
+
+repository  https://github.com/joyrider3774/chgame_emulator
+commit      bb9baf5cbf15c7886574eaf1137ddb33612370e7
+date        Tue Oct 27 05:11:36 2026 +0100
+nearest tag v1.2-7-gbb9baf5
+
+Only emu/src/*.c except main.c (the SDL front end) and gif.c are built into the core.

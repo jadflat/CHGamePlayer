@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+<!-- ES-DE for Android: the CHGame system, with two ways to play.
+     Copy to <ES-DE folder>/custom_systems/es_systems.xml (if you already have one there,
+     paste the <system> block inside its <systemList>). Games go in <ROMs folder>/chgame.
+     The first command is the default; pick the other per game or for the system in
+     ES-DE's Other settings > Alternative emulators. -->
+<systemList>
+    <system>
+        <name>chgame</name>
+        <fullname>CHGame</fullname>
+        <path>%ROMPATH%/chgame</path>
+        <extension>.chg .CHG</extension>
+        <command label="CHGame Player (Standalone)">%EMULATOR_CHGAME-PLAYER% %ACTION%=android.intent.action.VIEW %DATA%=%ROMPROVIDER%</command>
+        <command label="CHGame (RetroArch)">%EMULATOR_RETROARCH% %EXTRA_CONFIGFILE%=%EXTERNALDATA%/Android/data/%ANDROIDPACKAGE%/files/retroarch.cfg %EXTRA_LIBRETRO%=%INTERNALDATA%/%ANDROIDPACKAGE%/cores/chgame_libretro_android.so %EXTRA_ROM%=%ROM%</command>
+        <platform>chgame</platform>
+        <theme>chgame</theme>
+    </system>
+</systemList>

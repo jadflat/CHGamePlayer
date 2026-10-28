@@ -1,0 +1,37 @@
+# Software Information
+display_name = "CHGame (CHGame Emulator)"
+authors = "joyrider3774|jadflat"
+supported_extensions = "chg|bin|hex|elf"
+corename = "CHGame"
+categories = "Emulator"
+license = "MIT"
+permissions = ""
+display_version = "0.2"
+
+# Hardware Information
+manufacturer = "Kevin Bates"
+systemname = "CHGame"
+systemid = "chgame"
+
+# Libretro Features
+database = "CHGame"
+supports_no_game = "false"
+savestate = "true"
+savestate_features = "deterministic"
+cheats = "false"
+input_descriptors = "true"
+memory_descriptors = "false"
+libretro_saves = "false"
+core_options = "true"
+core_options_version = "1.0"
+load_subsystem = "false"
+hw_render = "false"
+needs_fullpath = "true"
+disk_control = "false"
+is_experimental = "true"
+
+firmware_count = 0
+
+notes = "Plays CHGame handheld games (.CHG). Put data files a game needs (e.g. STARLIFT.DAT) in <system>/chgame/sdcard/. Saves are written as <game>.sav in the save directory. Emulator by joyrider3774 (MIT); CHGame by Kevin Bates (Apache-2.0)."
+
+description = "A libretro wrapper around joyrider3774's cycle-accurate CHGame emulator: the CH32X035 RISC-V handheld with a 128x128 ST7735 screen, piezo buzzer and microSD card."

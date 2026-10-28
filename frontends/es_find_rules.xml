@@ -1,0 +1,12 @@
+<?xml version="1.0"?>
+<!-- ES-DE for Android: tells ES-DE where CHGame Player is.
+     Copy to <ES-DE folder>/custom_systems/es_find_rules.xml (if you already have one there,
+     paste the <emulator> block inside its <ruleList>). RetroArch needs no rule: ES-DE has one. -->
+<ruleList>
+    <emulator name="CHGAME-PLAYER">
+        <!-- CHGame Player, the standalone CHGame app -->
+        <rule type="androidpackage">
+            <entry>com.jadflat.chgame/com.jadflat.chgame.LaunchActivity</entry>
+        </rule>
+    </emulator>
+</ruleList>

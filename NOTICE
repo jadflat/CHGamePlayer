@@ -1,0 +1,21 @@
+CHGame libretro core and CHGame Player
+
+This repository's own code (libretro/libretro.c, libretro/android_shim.c,
+android/, test/, tools/, build scripts) is MIT licensed, see LICENSE.
+
+It includes:
+
+- emu/: CHGame Emulator by joyrider3774, MIT licence (emu/LICENSE),
+  https://github.com/joyrider3774/chgame_emulator, unchanged at the commit in
+  EMULATOR_VERSION.txt. All of the emulation is theirs.
+- The CHGame bootloader embedded in the emulator (MIT), from CHGame by
+  Kevin Bates (Apache-2.0).
+- libretro/libretro.h from libretro-common, by the RetroArch team (MIT-style
+  licence in the file).
+
+- android/assets/fonts/PressStart2P-Regular.ttf: Press Start 2P by CodeMan38, SIL Open
+  Font License 1.1 (android/assets/fonts/OFL.txt). The app shows game names in it.
+
+CHGame (the handheld, its platform and its bootloaders) is by Kevin Bates
+(bateske), https://chgame.website, Apache-2.0. Each game's credits are in its
+own .CHG and are shown by the app.
