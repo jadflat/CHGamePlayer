@@ -165,10 +165,12 @@ B or BACK goes back to the list.
 | A | the **right** face button |
 | B | the **bottom** face button |
 | START / SELECT | START / SELECT |
+| Up (a second button for it) | Y, the left face button |
 
 **Options → Map buttons** changes this: choose a CHGame button (Up, Down, Left,
-Right, A, B, START, SELECT, or *Menu*, the key that opens the in-game menu), then press the
-Retroid button you want for it. *Reset to defaults* puts it back. The left stick always works as
+Right, A, B, START, SELECT) or one of the extras (*Menu*, the key that opens the in-game menu;
+*Fast-forward*; *Up (second button)*), then press the Retroid button you want for it. The extras
+can also be left on *No key*. *Reset to defaults* puts it all back. The left stick always works as
 the d-pad, and BACK always opens the menu, so a mapping can't lock you out.
 
 The picture is drawn at the largest whole-number size that fits: 7x (896 pixels) on a

@@ -21,6 +21,13 @@ public class OptionsActivity extends Page {
 
     private SharedPreferences prefs;
 
+    /* back from Map buttons or Saves: show what changed */
+    @Override
+    protected void onRestart() {
+        super.onRestart();
+        build();
+    }
+
     @Override
     protected void onCreate(Bundle saved) {
         super.onCreate(saved);
@@ -94,8 +101,8 @@ public class OptionsActivity extends Page {
 
         section("Controls");
         Keymap k = Keymap.load(prefs);
-        row("Map buttons", "A: " + k.keyFor(Native.A) + " · B: " + k.keyFor(Native.B) + " · Menu: " + k.keyFor(Keymap.MENU),
-                this::mapButtons);
+        row("Map buttons", "A: " + k.keyFor(Native.A) + " · B: " + k.keyFor(Native.B) + " · Second Up: " + k.keyFor(Keymap.UP2),
+                () -> startActivity(new Intent(this, MapButtonsActivity.class)));
 
         section("ES-DE");
         row("ES-DE media folder", mediaName(), this::pickMedia);
@@ -275,49 +282,5 @@ public class OptionsActivity extends Page {
                         .setMessage(summary).setPositiveButton("OK", null).show();
             });
         }, "snaps").start();
-    }
-
-    /* ---------------------------------------------------------------- */
-    /* Button mapping                                                     */
-    /* ---------------------------------------------------------------- */
-
-    private void mapButtons() {
-        Keymap k = Keymap.load(prefs);
-        String[] items = new String[Keymap.BUTTONS.length + 1];
-        for (int i = 0; i < Keymap.BUTTONS.length; i++)
-            items[i] = Keymap.NAMES[i] + "   ·   " + k.keyFor(Keymap.BUTTONS[i]);
-        items[Keymap.BUTTONS.length] = "Reset to defaults";
-        new AlertDialog.Builder(this, Ui.dialogTheme())
-                .setTitle("Map buttons: choose one, then press its key")
-                .setItems(items, (d, which) -> {
-                    if (which == Keymap.BUTTONS.length) {
-                        k.defaults(false);
-                        k.save(prefs);
-                        mapButtons();
-                    } else {
-                        capture(k, which);
-                    }
-                })
-                .setNegativeButton("Done", (d, w) -> build())
-                .show();
-    }
-
-    /** Waits for the next key and gives it to button i; BACK cancels. */
-    private void capture(Keymap k, int i) {
-        AlertDialog d = new AlertDialog.Builder(this, Ui.dialogTheme())
-                .setTitle("CHGame " + Keymap.NAMES[i])
-                .setMessage("Press the button for " + Keymap.NAMES[i] + ".\n\nBACK cancels. BACK always opens the menu in a game.")
-                .create();
-        d.setOnKeyListener((dialog, code, ev) -> {
-            if (ev.getAction() != KeyEvent.ACTION_DOWN || ev.getRepeatCount() > 0) return true;
-            if (code != KeyEvent.KEYCODE_BACK) {
-                k.set(code, Keymap.BUTTONS[i]);
-                k.save(prefs);
-            }
-            dialog.dismiss();
-            mapButtons();
-            return true;
-        });
-        d.show();
     }
 }

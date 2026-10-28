@@ -344,6 +344,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
             return true;
         }
         int b = keymap.button(code);
+        if (b == Keymap.UP2) b = Native.UP;   /* a second Up, on Y unless Map buttons moved it */
         if (code == KeyEvent.KEYCODE_BACK || b == Keymap.MENU) {
             if (ev.getAction() == KeyEvent.ACTION_UP) menu();
             return true;
