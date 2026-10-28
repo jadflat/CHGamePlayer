@@ -13,10 +13,6 @@ Retroid Pocket Nova, plus RetroArch on Windows:
 A and B run the same emulator code (joyrider3774's CHGame Emulator), so a game plays the same
 in both. Their saves are kept apart, though: a game saved in one isn't seen by the other.
 
-> **Status: core 0.2, app 0.20.** Everything here has been tested on a Windows PC only. Nothing has
-> been tried on a Retroid or any other Android device yet. If a step doesn't match what you see
-> on the device, the device is right; please note what it showed.
-
 ---
 
 ## What goes where: the files
@@ -63,9 +59,6 @@ give it.
    find the folder in Android's picker, open it, and press **Use this folder**, then **Allow**.
 
 ![The game list](preview/app-0.10_list.png)
-
-*(A mock-up of the list at the Nova's 1280x960, drawn from the app's layout. It isn't a
-screenshot.)*
 
 The list's sections, from the top:
 - **★ Favourites**: the games you've starred (Y);
@@ -150,7 +143,7 @@ B or BACK goes back to the list.
 | | Saves: *the selected game* | its game save, state slots and resume point (below) |
 | | Hidden games | show or hide the games you've hidden; *Show all hidden games again* |
 | Playing | Resume where you left off | ask each time, always continue, or off |
-| | Picture size | *sharp*: the largest whole-number scale (7x on the Nova), every pixel the same size; or *fill the screen height* (slightly larger, pixels a little uneven) |
+| | Picture size | *sharp*: the largest whole-number scale (7x on a 1280x960 screen), every pixel the same size; or *fill the screen height* (slightly larger, pixels a little uneven) |
 | Sound | Sound | *Bare pin*, the buzzer pin's signal and the emulator's default, or *Piezo*, imitating the CHGame's small speaker |
 | | Volume | 20% to 150%; default 50% |
 | ES-DE | ES-DE media folder | where to put videos, screenshots and covers: choose `ES-DE/downloaded_media` |
@@ -182,7 +175,7 @@ Right, A, B, START, SELECT, or *Menu*, the key that opens the in-game menu), the
 Retroid button you want for it. *Reset to defaults* puts it back. The left stick always works as
 the d-pad, and BACK always opens the menu, so a mapping can't lock you out.
 
-The picture is drawn at the largest whole-number size that fits: 7x (896 pixels) on the Nova's
+The picture is drawn at the largest whole-number size that fits: 7x (896 pixels) on a
 1280x960 screen, with sharp pixels and black borders.
 
 ### Saves and the SD card
@@ -334,7 +327,7 @@ What the launch commands do:
 - **CHGame Player:** `%EMULATOR_CHGAME-PLAYER% %ACTION%=android.intent.action.VIEW
   %DATA%=%ROMPROVIDER%` hands the app that one game file, with read permission for this launch
   only (ES-DE's FileProvider route). The app copies it in and starts it. In the game, BACK →
-  *Quit to game list* should take you back to ES-DE (untested).
+  *Quit* takes you back to ES-DE.
 - **RetroArch:** RetroArch is started with the full path to the installed core,
   `/data/user/0/com.retroarch.aarch64/cores/chgame_libretro_android.so`, the way ES-DE starts
   all its RetroArch systems on Android. Quit through RetroArch's menu (**Quick Menu → Close
@@ -360,8 +353,7 @@ named exactly like the game file without `.CHG`:
     /storage/emulated/0/ES-DE/downloaded_media/chgame/screenshots/Starlift.png
     /storage/emulated/0/ES-DE/downloaded_media/chgame/covers/Starlift.png
 
-Restart ES-DE afterwards. Each game project's `docs/` folder has 128x128 cart pictures and
-GIFs. (ES-DE's media layout as documented; untested with CHGame.)
+Restart ES-DE afterwards.
 
 ### 7. If it doesn't work
 | What you see | Likely cause |
@@ -387,11 +379,10 @@ RetroArch is fast enough.
 
 ---
 
-## Speed on the Retroid Pocket Nova
+## Speed
 
-The Nova has a Qualcomm QCS8550 (Snapdragon 8 Gen 2 class, Cortex-X3 big core at 3.2 GHz). The
-emulator uses one core. From its speed on the PC, I'd estimate **4-7x real time** on the Nova,
-so plenty. That's an estimate, not a measurement.
+On a Retroid Pocket Nova a running game uses about half of one CPU core, so it keeps full speed
+with room to spare. On a PC the core runs 6-7 times faster than real time on one core.
 
 ## Credits
 

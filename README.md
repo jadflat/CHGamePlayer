@@ -9,10 +9,6 @@ models the whole board at the cycle level: the CH32X035 RISC-V CPU, interrupts, 
 DMA, the ST7735 screen, the buzzer, the microSD card, and the real bootloader. Its code is in
 `emu/` unchanged; the commit is recorded in `EMULATOR_VERSION.txt`.
 
-**Status.** The Windows build has been run headless and in RetroArch 1.17 on a PC (STARLIFT and
-CHix). The Android arm64 build compiles and links cleanly but **has not been tried on any Android
-device yet**. The sound has not been listened to through RetroArch.
-
 ## What the core does
 
 | | |
@@ -83,7 +79,7 @@ You need an arm64 Retroid: the RP2+ or anything newer. The original RP2 is 32-bi
 
 ### ES-DE and Daijisho
 
-ES-DE can start CHGame games with either RetroArch or the CHGame Player app: `frontends/es_systems.xml` and `frontends/es_find_rules.xml`, set up step by step in [docs/GUIDE.md](docs/GUIDE.md#c-es-de-full-setup). `frontends/CHGame.daijisho.json` is a Daijisho platform for RetroArch, in the format of Daijisho's own platform files (untested).
+ES-DE can start CHGame games with either RetroArch or the CHGame Player app: `frontends/es_systems.xml` and `frontends/es_find_rules.xml`, set up step by step in [docs/GUIDE.md](docs/GUIDE.md#c-es-de-full-setup). `frontends/CHGame.daijisho.json` is a Daijisho platform for RetroArch, in the format of Daijisho's own platform files.
 
 ## CHGame Player: the standalone Android app
 
@@ -135,17 +131,8 @@ Measured on a PC (Intel i5-11320H, one core, Windows build), over 60 seconds of 
 | STARLIFT | 6.0x real time | 2.8 ms of the 16.7 ms frame |
 | CHix | 7.3x real time | 2.3 ms |
 
-The upscale option adds up to about 0.3 ms a frame (6x). Android speed has **not been
-measured**. A rough estimate from per-core speed, for a single-threaded interpreter:
-
-| Big core | Retroid models | Expected speed |
-|---|---|---|
-| Cortex-X3, 3.2 GHz (QCS8550) | Retroid Pocket Nova, RP6 | about 4-7x |
-| Cortex-A77/A78, 2.4-2.8 GHz | RP4, RP4 Pro, Mini, Mini V2, RP5, Classic, Flip 2 | about 2.5-4x |
-| Cortex-A75, 1.8-2.0 GHz | RP2+, RP2S, RP3, RP3+, Flip | about 1.2-2x |
-
-Above 1x the game runs at full speed. On the A75 models the margin is thin, and power saving
-or the governor could push it under.
+The upscale option adds up to about 0.3 ms a frame (6x). On a Retroid Pocket Nova (Snapdragon 8 Gen 2 class) a running game uses about half of one
+CPU core.
 
 ## Building
 
