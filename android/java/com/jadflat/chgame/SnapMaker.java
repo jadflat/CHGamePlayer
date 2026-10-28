@@ -325,7 +325,8 @@ final class SnapMaker {
         return DocumentsContract.getDocumentId(made);
     }
 
-    private static String child(ContentResolver cr, Uri tree, String parent, String name) {
+    /** The document id of the named child of parent, or null if there is none (MediaActivity uses it too). */
+    static String child(ContentResolver cr, Uri tree, String parent, String name) {
         Uri kids = DocumentsContract.buildChildDocumentsUriUsingTree(tree, parent);
         try (android.database.Cursor c = cr.query(kids, new String[] { Document.COLUMN_DOCUMENT_ID,
                 Document.COLUMN_DISPLAY_NAME }, null, null, null)) {
@@ -333,6 +334,19 @@ final class SnapMaker {
                 if (name.equals(c.getString(1))) return c.getString(0);
         }
         return null;
+    }
+
+    /** The file names in the media folder's chgame/<sub> (empty if it isn't there yet). */
+    static java.util.Set<String> names(ContentResolver cr, Uri tree, String sub) {
+        java.util.Set<String> out = new java.util.HashSet<>();
+        String chgame = child(cr, tree, DocumentsContract.getTreeDocumentId(tree), "chgame");
+        String d = chgame == null ? null : child(cr, tree, chgame, sub);
+        if (d == null) return out;
+        Uri kids = DocumentsContract.buildChildDocumentsUriUsingTree(tree, d);
+        try (android.database.Cursor c = cr.query(kids, new String[] { Document.COLUMN_DISPLAY_NAME }, null, null, null)) {
+            while (c != null && c.moveToNext()) out.add(c.getString(0));
+        }
+        return out;
     }
 
     /** dir/name, replaced if it is there, from a local file. */

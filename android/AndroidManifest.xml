@@ -3,8 +3,8 @@
      folder the user picks with Android's own picker (a document tree). -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.jadflat.chgame"
-    android:versionCode="29"
-    android:versionName="0.29">
+    android:versionCode="32"
+    android:versionName="0.32">
 
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="36" />
     <uses-feature android:name="android.hardware.gamepad" android:required="false" />
@@ -57,6 +57,11 @@
 
         <activity
             android:name=".OptionsActivity"
+            android:exported="false"
+            android:theme="@android:style/Theme.DeviceDefault.NoActionBar" />
+
+        <activity
+            android:name=".MediaActivity"
             android:exported="false"
             android:theme="@android:style/Theme.DeviceDefault.NoActionBar" />
 

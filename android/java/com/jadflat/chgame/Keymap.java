@@ -30,8 +30,7 @@ final class Keymap {
             KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_BUTTON_B,
             KeyEvent.KEYCODE_BUTTON_A, KeyEvent.KEYCODE_BUTTON_START, KeyEvent.KEYCODE_BUTTON_SELECT,
             KeyEvent.KEYCODE_BUTTON_MODE, KeyEvent.KEYCODE_BUTTON_R1, KeyEvent.KEYCODE_BUTTON_X,
-            KeyEvent.KEYCODE_BUTTON_L2, 0, KeyEvent.KEYCODE_BUTTON_THUMBL, KeyEvent.KEYCODE_BUTTON_THUMBR };
-    /* 0: no key by default (Screenshot) */
+            KeyEvent.KEYCODE_BUTTON_L2, KeyEvent.KEYCODE_BUTTON_L1, KeyEvent.KEYCODE_BUTTON_THUMBL, KeyEvent.KEYCODE_BUTTON_THUMBR };
 
     /** keycode -> button bit */
     final SparseIntArray map = new SparseIntArray();
@@ -71,6 +70,8 @@ final class Keymap {
         /* and quick save and quick load, from before they existed: L3 and R3, if those are free */
         if (k.map.indexOfValue(QSAVE) < 0 && k.map.get(KeyEvent.KEYCODE_BUTTON_THUMBL, 0) == 0)
             k.map.put(KeyEvent.KEYCODE_BUTTON_THUMBL, QSAVE);
+        if (k.map.indexOfValue(SHOT) < 0 && k.map.get(KeyEvent.KEYCODE_BUTTON_L1, 0) == 0)
+            k.map.put(KeyEvent.KEYCODE_BUTTON_L1, SHOT);
         if (k.map.indexOfValue(QLOAD) < 0 && k.map.get(KeyEvent.KEYCODE_BUTTON_THUMBR, 0) == 0)
             k.map.put(KeyEvent.KEYCODE_BUTTON_THUMBR, QLOAD);
         return k;

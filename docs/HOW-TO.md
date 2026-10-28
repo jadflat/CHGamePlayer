@@ -20,7 +20,8 @@ The selected game plays a live preview on the right, with its sound (L1 mutes it
 
 | Button | Does |
 |---|---|
-| D-pad | move through the list |
+| D-pad up / down | move through the list |
+| D-pad left / right | up / down a page |
 | A or START | play |
 | Y | add to or remove from ★ Favourites |
 | X | hide the game (Options → Hidden games shows them again) |
@@ -51,6 +52,7 @@ settings… and About this game.
 | Y | Up as well, beside the d-pad |
 | Hold R1 | fast-forward (3x) |
 | Hold L2 | rewind, half a second a step, up to about 10 seconds |
+| L1 | screenshot |
 | L3 | quick save (slot 1) |
 | R3 | quick load (slot 1) |
 | BACK or Home | the in-game menu |
@@ -73,7 +75,7 @@ All of these can be changed in **Options → Map buttons**, which also has a *Te
 
 ![Load state with pictures](howto/09-load.png)
 
-Screenshots and clips go to a **CHGame screenshots** folder inside your games folder.
+Screenshots and clips go to a **CHGame screenshots** folder inside your games folder. **Options → Screenshots, clips and pictures** shows them with thumbnails, to share (Android's share sheet), export to a folder you pick, or delete; it also exports save-state pictures and every game's cart picture (512×512), and has *Export all*.
 
 ## 4. Options
 
@@ -82,12 +84,12 @@ Screenshots and clips go to a **CHGame screenshots** folder inside your games fo
 | Section | What's there |
 |---|---|
 | Games | the games folder; Saves (a game's own save, its 4 state slots and resume point); **Export saves** / **Import saves** (to and from a *CHGame saves* folder in your games folder; import asks before replacing anything); Hidden games |
-| Game list | Live preview (sound, video only or off); Sort games (name, most played, recently added) |
+| Game list | Layout (a list, or a grid of big cart pictures); Live preview (sound, video only or off); Sort games (name, most played, recently added) |
 | Playing | Resume (ask, always, or off); Picture size (sharp whole-number scaling or fill the screen); Speed overlay (fps, % of real speed, frame time) |
-| Screen | Look (sharp, or an LCD grid); Colours; Border (a CHGame-shaped frame beside the picture) |
+| Screen | Look (sharp, an LCD grid, scanlines, or CRT); Colours; Border (a CHGame-shaped frame beside the picture) |
 | Sound | Sound (bare pin or piezo-like); Volume; Audio buffer |
 | Controls | Map buttons; Touch controls (off, automatic or always) |
-| ES-DE | make videos, screenshots and covers for ES-DE |
+| ES-DE | checks which games are missing a video, screenshot or cover, lists them, and makes the ones you tick |
 
 ![Options, lower down](howto/03-options-2.png)
 

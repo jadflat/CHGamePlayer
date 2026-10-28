@@ -69,7 +69,13 @@ public class OptionsActivity extends Page {
                         build();
                     }));
 
+        row("Screenshots, clips and pictures", "See, share, export or delete them",
+                () -> startActivity(new Intent(this, MediaActivity.class)));
         section("Game list");
+        row("Layout", Options.gridList(prefs) ? "Grid of cart pictures" : "List", () -> {
+            prefs.edit().putBoolean("gridList", !Options.gridList(prefs)).apply();
+            build();
+        });
         row("Live preview", Options.PREVIEW_NAMES[indexOf(Options.PREVIEWS, Options.preview(prefs))]
                         + ". The selected game runs in the picture's place after a moment",
                 () -> pick("Live preview", Options.PREVIEW_NAMES, indexOf(Options.PREVIEWS, Options.preview(prefs)),
@@ -129,10 +135,8 @@ public class OptionsActivity extends Page {
             row("Videos show", Options.SNAP_NAMES[indexOf(Options.SNAPS, Options.snaps(prefs))],
                     () -> pick("The ES-DE videos show", Options.SNAP_NAMES, indexOf(Options.SNAPS, Options.snaps(prefs)),
                             i -> prefs.edit().putString("snaps", Options.SNAPS[i]).apply()));
-            row("Make videos, screenshots and covers", "For every game: a 15-second video with sound, a screenshot "
-                    + "and the cart picture, into chgame/videos, screenshots and covers", () -> makeMedia(null));
-            if (gameFile != null)
-                row("Make them for " + gameTitle + " only", null, () -> makeMedia(gameFile));
+            row("Videos, screenshots and covers", "Checks which games are missing any (a 15-second video with "
+                    + "sound, a screenshot, the cart picture), then makes the ones you choose", this::checkMedia);
         }
 
         section("About");
@@ -275,11 +279,94 @@ public class OptionsActivity extends Page {
     private volatile boolean cancelMaking;
 
     /** Videos, screenshots and covers for every game (or just one), on a thread, with progress. */
-    private void makeMedia(String onlyFile) {
+    /** One game's media: the file, its title, and what ES-DE has not got yet. */
+    private static final class Need {
+        Files.Entry entry; String title; String missing;
+    }
+
+    /** Lists every game with what is missing in the ES-DE media folder, then offers to make them. */
+    private void checkMedia() {
+        Uri t = tree(), m = media();
+        if (t == null || m == null) return;
+        AlertDialog wait = new AlertDialog.Builder(this, Ui.dialogTheme()).setTitle("ES-DE media")
+                .setMessage("Checking the games…").setCancelable(false).show();
+        new Thread(() -> {
+            android.content.ContentResolver cr = getContentResolver();
+            java.util.Set<String> videos = SnapMaker.names(cr, m, "videos"), shots = SnapMaker.names(cr, m, "screenshots"),
+                    covers = SnapMaker.names(cr, m, "covers");
+            java.util.List<Need> all = new java.util.ArrayList<>(), missing = new java.util.ArrayList<>();
+            for (Files.Entry e : Files.list(cr, t)) {
+                if (!Files.isGame(e.path)) continue;
+                String file = e.path.substring(e.path.lastIndexOf('/') + 1), base = Saves.base(file);
+                Cart cart = Cart.read(cr, e.uri);
+                Need n = new Need();
+                n.entry = e;
+                n.title = cart != null && !cart.title.isEmpty() ? cart.title : base;
+                java.util.List<String> lack = new java.util.ArrayList<>();
+                if (!videos.contains(base + ".mp4")) lack.add("video");
+                if (!shots.contains(base + ".png")) lack.add("screenshot");
+                if (!covers.contains(base + ".png")) lack.add("cover");
+                n.missing = android.text.TextUtils.join(", ", lack);
+                all.add(n);
+                if (!lack.isEmpty()) missing.add(n);
+            }
+            java.util.Collections.sort(missing, (a, b) -> a.title.compareToIgnoreCase(b.title));
+            java.util.Collections.sort(all, (a, b) -> a.title.compareToIgnoreCase(b.title));
+            runOnUiThread(() -> {
+                wait.dismiss();
+                showNeeds(all, missing);
+            });
+        }, "media-check").start();
+    }
+
+    private void showNeeds(java.util.List<Need> all, java.util.List<Need> missing) {
+        AlertDialog.Builder b = new AlertDialog.Builder(this, Ui.dialogTheme());
+        if (missing.isEmpty()) {
+            b.setTitle("ES-DE media: all there")
+                    .setMessage("All " + all.size() + " games have a video, a screenshot and a cover.")
+                    .setPositiveButton("OK", null)
+                    .setNeutralButton("Remake…", (d, w) -> chooseMedia(all, false, "Remake which games?"))
+                    .show();
+            return;
+        }
+        chooseMedia(missing, true, (all.size() - missing.size()) + " of " + all.size() + " games are complete. Missing:");
+    }
+
+    /** A list to tick: each game with what it is missing; Make makes the ticked ones. */
+    private void chooseMedia(java.util.List<Need> list, boolean ticked, String title) {
+        String[] items = new String[list.size()];
+        boolean[] on = new boolean[list.size()];
+        for (int i = 0; i < items.length; i++) {
+            Need n = list.get(i);
+            items[i] = n.missing.isEmpty() ? n.title : n.title + "  ·  no " + n.missing;
+            on[i] = ticked;
+        }
+        AlertDialog dlg = new AlertDialog.Builder(this, Ui.dialogTheme()).setTitle(title)
+                .setMultiChoiceItems(items, on, (d, i, c) -> on[i] = c)
+                .setPositiveButton("Make", (d, w) -> {
+                    java.util.List<Files.Entry> go = new java.util.ArrayList<>();
+                    for (int i = 0; i < on.length; i++) if (on[i]) go.add(list.get(i).entry);
+                    if (!go.isEmpty()) makeMedia(go);
+                })
+                .setNeutralButton("All / none", null)
+                .setNegativeButton("Cancel", null)
+                .show();
+        /* ticks all, or none when all are ticked, keeping the list open */
+        dlg.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(v -> {
+            boolean every = true;
+            for (boolean x : on) every &= x;
+            for (int i = 0; i < on.length; i++) {
+                on[i] = !every;
+                dlg.getListView().setItemChecked(i, !every);
+            }
+        });
+    }
+
+    private void makeMedia(java.util.List<Files.Entry> games) {
         Uri t = tree(), m = media();
         if (t == null || m == null) return;
         cancelMaking = false;
-        android.widget.TextView progress = Ui.text(this, "Finding the games…", 16, Ui.ON_SURFACE, Ui.REGULAR);
+        android.widget.TextView progress = Ui.text(this, "Starting…", 16, Ui.ON_SURFACE, Ui.REGULAR);
         progress.setPadding(Ui.dp(this, 24), Ui.dp(this, 16), Ui.dp(this, 24), Ui.dp(this, 8));
         AlertDialog d = new AlertDialog.Builder(this, Ui.dialogTheme())
                 .setTitle("Making ES-DE media")
@@ -289,10 +376,6 @@ public class OptionsActivity extends Page {
                 .show();
         getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         new Thread(() -> {
-            java.util.List<Files.Entry> games = new java.util.ArrayList<>();
-            for (Files.Entry e : Files.list(getContentResolver(), t))
-                if (Files.isGame(e.path) && (onlyFile == null || e.path.endsWith("/" + onlyFile) || e.path.equals(onlyFile)))
-                    games.add(e);
             int made = 0;
             StringBuilder problems = new StringBuilder();
             Preview.gameRunning = true;         /* no list preview while the core is busy here */

@@ -80,10 +80,13 @@ final class Options {
         Native.setOption("chgame_volume", v != null ? v : volume(p));
     }
 
-    static final String[] LOOKS = { "sharp", "grid" };
-    static final String[] LOOK_NAMES = { "Sharp pixels", "LCD grid (thin dark lines between pixels)" };
+    static final String[] LOOKS = { "sharp", "grid", "scanlines", "crt" };
+    static final String[] LOOK_NAMES = { "Sharp pixels", "LCD grid (thin dark lines between pixels)",
+            "Scanlines (dark lines between pixel rows)", "CRT (scanlines, a soft glow and darker corners)" };
     /** sharp or grid: how the game's screen is drawn */
     static String look(SharedPreferences p) { return p.getString("look", "sharp"); }
+    /** true: the game list as a grid of big cart pictures instead of rows */
+    static boolean gridList(SharedPreferences p) { return p.getBoolean("gridList", false); }
     /** true: colours toned like the CHGame's own panel (a little less saturated) */
     static boolean panelColours(SharedPreferences p) { return p.getBoolean("panel", false); }
 

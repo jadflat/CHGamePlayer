@@ -50,7 +50,7 @@ import java.util.concurrent.Executors;
  * Options, where everything else lives.
  */
 public class MainActivity extends Activity {
-    static final String VERSION = "0.29";
+    static final String VERSION = "0.32";
     static final String PREFS = "chgame";
 
     private SharedPreferences prefs;
@@ -72,6 +72,8 @@ public class MainActivity extends Activity {
     private String treeSeen;                                    /* the folder the caches are for */
     private int generation;                                     /* drops a listing a newer one replaced */
     private int shown = -1;
+    private boolean gridMode;                                   /* the list as cells, not rows (Options: Layout) */
+    private int gridCols = 2;                                   /* cells in a grid row */
 
     @Override
     protected void onCreate(Bundle saved) {
@@ -155,6 +157,10 @@ public class MainActivity extends Activity {
                 if (g >= 0) select(g, row);
             }
             @Override public void onNothingSelected(AdapterView<?> p) { }
+        });
+        /* grid mode: a width change (a turn, a fold) cuts the rows again */
+        list.addOnLayoutChangeListener((v, x0, y0, x1, y1, ox0, oy0, ox1, oy1) -> {
+            if (gridMode && x1 - x0 != ox1 - ox0) list.post(this::regrid);
         });
         listPane = list;
         body.addView(list);
@@ -249,6 +255,7 @@ public class MainActivity extends Activity {
             treeSeen = t;
         }
         showMute();
+        gridMode = Options.gridList(prefs);     /* the refresh below builds the rows in this layout */
         refresh();
         ((InputManager) getSystemService(INPUT_SERVICE)).registerInputDeviceListener(pads, null);
         offerTouch();
@@ -411,23 +418,7 @@ public class MainActivity extends Activity {
             return c != 0 ? c : a.path.compareToIgnoreCase(b.path);
         });
         favs = Options.favourites(prefs);
-        rows.clear();
-        /* ★ Favourites and Last played first: those games are in their own section too */
-        List<Integer> fav = new ArrayList<>(), recent = new ArrayList<>();
-        for (int i = 0; i < games.size(); i++) {
-            if (favs.contains(games.get(i).path)) fav.add(i);
-            if (Stats.last(this, fileName(games.get(i))) > 0) recent.add(i);
-        }
-        Collections.sort(recent, (a, b) -> Long.compare(Stats.last(this, fileName(games.get(b))),
-                Stats.last(this, fileName(games.get(a)))));
-        if (recent.size() > RECENT) recent = recent.subList(0, RECENT);
-        if (!fav.isEmpty()) { rows.add("\u2605 Favourites"); rows.addAll(fav); }
-        if (!recent.isEmpty()) { rows.add("Last played"); rows.addAll(recent); }
-        for (int i = 0; i < games.size(); i++) {
-            if (i == 0 || isPort(games.get(i)) != isPort(games.get(i - 1)))
-                rows.add(isPort(games.get(i)) ? "Ports" : "CHGame originals");
-            rows.add(i);
-        }
+        buildRows();
         count.setText(games.size() + (games.size() == 1 ? " game" : " games")
                 + (hiddenCount > 0 && !showHidden ? " · " + hiddenCount + " hidden" : ""));
         adapter.notifyDataSetChanged();
@@ -449,12 +440,66 @@ public class MainActivity extends Activity {
 
     private static final int RECENT = 1;     /* "Last played": the one game */
 
+    /** The list's rows: each section's name, then its games. Grid mode puts a section's games in rows of gridCols. */
+    private void buildRows() {
+        gridCols = colsFor(listWidth());
+        rows.clear();
+        /* ★ Favourites and Last played first: those games are in their own section too */
+        List<Integer> fav = new ArrayList<>(), recent = new ArrayList<>();
+        List<Integer> originals = new ArrayList<>(), ports = new ArrayList<>();
+        for (int i = 0; i < games.size(); i++) {
+            if (favs.contains(games.get(i).path)) fav.add(i);
+            if (Stats.last(this, fileName(games.get(i))) > 0) recent.add(i);
+            (isPort(games.get(i)) ? ports : originals).add(i);
+        }
+        Collections.sort(recent, (a, b) -> Long.compare(Stats.last(this, fileName(games.get(b))),
+                Stats.last(this, fileName(games.get(a)))));
+        if (recent.size() > RECENT) recent = recent.subList(0, RECENT);
+        addSection("★ Favourites", fav);
+        addSection("Last played", recent);
+        addSection("CHGame originals", originals);
+        addSection("Ports", ports);
+    }
+
+    private void addSection(String name, List<Integer> ids) {
+        if (ids.isEmpty()) return;
+        rows.add(name);
+        if (!gridMode) {
+            rows.addAll(ids);
+            return;
+        }
+        for (int i = 0; i < ids.size(); i += gridCols) {
+            int n = Math.min(gridCols, ids.size() - i);
+            int[] cells = new int[n];
+            for (int k = 0; k < n; k++) cells[k] = ids.get(i + k);
+            rows.add(cells);
+        }
+    }
+
+    /** Grid mode's columns: about 200 dp a cell, at least two. */
+    private int colsFor(int px) {
+        return Math.max(2, px / Ui.dp(this, 200));
+    }
+
+    /** The list's width, or half the screen before the list is laid out. */
+    private int listWidth() {
+        return list.getWidth() > 0 ? list.getWidth() : getResources().getDisplayMetrics().widthPixels / 2;
+    }
+
+    /** Grid mode: the rows again for the list's new width, the selected game kept selected. */
+    private void regrid() {
+        if (!gridMode || games.isEmpty()) return;
+        buildRows();
+        adapter.notifyDataSetChanged();
+        if (shown >= 0) goTo(shown);
+    }
+
     private void select(int pos, int row) {
         if (pos < 0 || pos >= games.size()) return;
         boolean moved = pos != shown;
         shown = pos;
         shownRow = row;
-        list.setItemChecked(row, true);
+        if (!gridMode) list.setItemChecked(row, true);
         /* the first game of a section: keep its section's name in view above it (the list
            would otherwise scroll the game to the top and the name out of sight) */
         if (headerAbove(row) && row - 1 < list.getFirstVisiblePosition()) {
@@ -462,11 +507,17 @@ public class MainActivity extends Activity {
             list.post(() -> list.setSelectionFromTop(r, Ui.dp(this, 40)));
         }
         showSelected();
+        if (gridMode) adapter.notifyDataSetChanged();       /* the highlight moves to this cell */
         if (moved || !previewing) startPreview();
     }
 
+    /** True for a section's name row. */
+    private boolean isHeader(int row) {
+        return rows.get(row) instanceof String;
+    }
+
     private boolean headerAbove(int row) {
-        return row > 0 && gameAt(row - 1) < 0;
+        return row > 0 && isHeader(row - 1);
     }
 
     /** Moves the selection to the game at pos, its section's name kept in view. */
@@ -494,7 +545,19 @@ public class MainActivity extends Activity {
         /* going back, step to the first game of that letter, not its last */
         while (j - dir >= 0 && j - dir < games.size() && letterOf(j - dir) == to) j -= dir;
         goTo(j);
-        Saves.toast(this, String.valueOf(to));
+    }
+
+    /** D-pad left (dir -1) or right (dir 1): up or down a page of rows, onto the nearest game. */
+    private void page(int dir) {
+        if (shown < 0 || rows.isEmpty()) return;
+        int n = Math.max(1, list.getLastVisiblePosition() - list.getFirstVisiblePosition());
+        int row = Math.max(0, Math.min(rows.size() - 1, shownRow + dir * n));
+        int r = row;
+        while (r >= 0 && r < rows.size() && gameAt(r) < 0) r += dir;      /* a header: the game past it */
+        if (r < 0 || r >= rows.size()) for (r = row; r >= 0 && r < rows.size() && gameAt(r) < 0; ) r -= dir;
+        if (r < 0 || r >= rows.size() || r == shownRow) return;
+        list.setSelectionFromTop(r, headerAbove(r) ? Ui.dp(this, 40) : 0);
+        select(gameAt(r), r);
     }
 
     /** Asks for part of a title, then selects the first game that has it. */
@@ -538,8 +601,12 @@ public class MainActivity extends Activity {
         return row >= 0 && row < rows.size() && rows.get(row) instanceof Integer ? (Integer) rows.get(row) : -1;
     }
 
+    /** The row showing a game: its list row, or in grid mode the grid row that holds it. */
     private int rowOf(int game) {
-        for (int r = 0; r < rows.size(); r++) if (Integer.valueOf(game).equals(rows.get(r))) return r;
+        for (int r = 0; r < rows.size(); r++) {
+            if (Integer.valueOf(game).equals(rows.get(r))) return r;
+            if (cellsAt(r) != null && indexIn(cellsAt(r), game) >= 0) return r;
+        }
         return 0;
     }
 
@@ -759,6 +826,68 @@ public class MainActivity extends Activity {
         refresh();
     }
 
+    /** Grid mode: the d-pad moves the cells, so the list does not move its own focus. */
+    @Override
+    public boolean dispatchKeyEvent(KeyEvent ev) {
+        int code = ev.getKeyCode();
+        boolean dpad = code == KeyEvent.KEYCODE_DPAD_UP || code == KeyEvent.KEYCODE_DPAD_DOWN
+                || code == KeyEvent.KEYCODE_DPAD_LEFT || code == KeyEvent.KEYCODE_DPAD_RIGHT;
+        if (gridMode && shown >= 0 && dpad) {
+            if (ev.getAction() == KeyEvent.ACTION_DOWN) gridMove(code);
+            return true;
+        }
+        return super.dispatchKeyEvent(ev);
+    }
+
+    /** The games of a grid row, or null when the row is not one. */
+    private int[] cellsAt(int row) {
+        return row >= 0 && row < rows.size() && rows.get(row) instanceof int[] ? (int[]) rows.get(row) : null;
+    }
+
+    private static int indexIn(int[] ids, int game) {
+        for (int k = 0; k < ids.length; k++) if (ids[k] == game) return k;
+        return -1;
+    }
+
+    /** The grid row before (dir -1) or after (dir 1) row, or -1: section names are skipped. */
+    private int gridRowNear(int row, int dir) {
+        for (int r = row + dir; r >= 0 && r < rows.size(); r += dir)
+            if (rows.get(r) instanceof int[]) return r;
+        return -1;
+    }
+
+    /** Left or right a cell (on to the next row's end or start at an edge); up or down a row, same column. */
+    private void gridMove(int code) {
+        int r = shownRow;
+        int[] ids = cellsAt(r);
+        int c = ids == null ? -1 : indexIn(ids, shown);
+        if (c < 0) return;
+        if (code == KeyEvent.KEYCODE_DPAD_LEFT || code == KeyEvent.KEYCODE_DPAD_RIGHT) {
+            int dir = code == KeyEvent.KEYCODE_DPAD_LEFT ? -1 : 1;
+            if (c + dir >= 0 && c + dir < ids.length) c += dir;
+            else {
+                r = gridRowNear(r, dir);
+                if (r < 0) return;
+                ids = cellsAt(r);
+                c = dir < 0 ? ids.length - 1 : 0;
+            }
+        } else {
+            r = gridRowNear(r, code == KeyEvent.KEYCODE_DPAD_UP ? -1 : 1);
+            if (r < 0) return;
+            ids = cellsAt(r);
+            c = Math.min(c, ids.length - 1);
+        }
+        keepVisible(r);
+        select(ids[c], r);
+    }
+
+    /** Scrolls the list so grid row r shows, with its section's name above it when it starts a section. */
+    private void keepVisible(int r) {
+        int top = headerAbove(r) ? r - 1 : r;
+        if (top < list.getFirstVisiblePosition()) list.setSelectionFromTop(r, headerAbove(r) ? Ui.dp(this, 40) : 0);
+        else if (r >= list.getLastVisiblePosition()) list.smoothScrollToPosition(r);
+    }
+
     @Override
     public boolean onKeyDown(int code, KeyEvent ev) {
         int pos = shown;
@@ -775,6 +904,12 @@ public class MainActivity extends Activity {
                 break;
             case KeyEvent.KEYCODE_BUTTON_L1:
                 toggleMute();
+                return true;
+            case KeyEvent.KEYCODE_DPAD_LEFT:
+                page(-1);
+                return true;
+            case KeyEvent.KEYCODE_DPAD_RIGHT:
+                page(1);
                 return true;
             case KeyEvent.KEYCODE_BUTTON_L2:
                 jumpLetter(-1);
@@ -796,17 +931,57 @@ public class MainActivity extends Activity {
     /* Rows                                                               */
     /* ---------------------------------------------------------------- */
 
+    /** Grid mode: one row of up to gridCols cells, each a card with the cart picture and its title under it. */
+    private View gridRow(int row, int[] ids) {
+        LinearLayout line = new LinearLayout(this);
+        line.setOrientation(LinearLayout.HORIZONTAL);
+        line.setLayoutParams(new AbsListView.LayoutParams(AbsListView.LayoutParams.MATCH_PARENT,
+                AbsListView.LayoutParams.WRAP_CONTENT));
+        int cell = listWidth() / gridCols, gap = Ui.dp(this, 8), pad = Ui.dp(this, 6);
+        for (int g : ids) {
+            Files.Entry e = games.get(g);
+            boolean on = row == shownRow && g == shown;
+            LinearLayout card = new LinearLayout(this);
+            card.setOrientation(LinearLayout.VERTICAL);
+            card.setPadding(pad, pad, pad, pad);
+            card.setBackground(Ui.rounded(this, on ? Ui.PRIMARY_CONTAINER : Ui.SURFACE, 16)   /* not Ui.card: the list row's own highlight would light every cell */);
+            card.setAlpha(hidden.contains(e.path) ? 0.6f : 1f);
+            Cart c = cart(e);
+            ArtView pic = new ArtView(this, 12);
+            pic.fill = true;
+            pic.set(c == null ? null : c.picture);
+            int side = Math.max(1, cell - gap - 2 * pad);   /* the card's inside width */
+            card.addView(pic, new LinearLayout.LayoutParams(side, side));
+            TextView title = Ui.text(this, (favs.contains(e.path) ? "★ " : "") + displayTitle(e), 13,
+                    on ? Ui.ON_PRIMARY_CONTAINER : Ui.ON_SURFACE, Ui.REGULAR);
+            title.setSingleLine(true);
+            title.setEllipsize(TextUtils.TruncateAt.END);
+            title.setPadding(Ui.dp(this, 2), Ui.dp(this, 6), Ui.dp(this, 2), 0);
+            card.addView(title, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT));
+            card.setFocusable(false);
+            /* a tap selects; a tap on the selected cell plays, as in the list */
+            card.setOnClickListener(v -> { if (row == shownRow && g == shown) play(g); else select(g, row); });
+            card.setOnLongClickListener(v -> { gameMenu(g, row); return true; });
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(cell - gap, LinearLayout.LayoutParams.WRAP_CONTENT);
+            lp.setMargins(gap / 2, 0, gap / 2, gap);     /* cell wide in all, margins included */
+            line.addView(card, lp);
+        }
+        return line;
+    }
+
     private final class GameAdapter extends BaseAdapter {
         @Override public int getCount() { return rows.size(); }
         @Override public Object getItem(int row) { return rows.get(row); }
         @Override public long getItemId(int row) { return row; }
-        @Override public int getViewTypeCount() { return 2; }
-        @Override public int getItemViewType(int row) { return gameAt(row) < 0 ? 1 : 0; }
+        @Override public int getViewTypeCount() { return 3; }
+        @Override public int getItemViewType(int row) { return isHeader(row) ? 1 : cellsAt(row) != null ? 2 : 0; }
         @Override public boolean areAllItemsEnabled() { return false; }
-        @Override public boolean isEnabled(int row) { return gameAt(row) >= 0; }
+        @Override public boolean isEnabled(int row) { return !isHeader(row); }
 
         @Override
         public View getView(int row, View convert, ViewGroup parent) {
+            if (cellsAt(row) != null) return gridRow(row, cellsAt(row));
             int pos = gameAt(row);
             if (pos < 0) {
                 /* a section's name: a fresh view every time, never one recycled from a game's row

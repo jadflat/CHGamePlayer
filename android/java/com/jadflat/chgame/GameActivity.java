@@ -77,6 +77,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     private TouchControls touch;            /* the touch pad over the picture */
     private boolean touchAuto;              /* Options: hidden on the first key event */
     private Bitmap bezelBmp;                /* the handheld frame, drawn once per surface size (loop thread) */
+    private volatile Bitmap scanBmp;        /* Options: scanlines (and CRT's vignette) over the picture, built per surface size */
     private String speedText = "";          /* the speed line (loop thread only) */
     private int speedFrames;                /* frames, and time in Native.frame, since the last speed line */
     private long speedNanos, speedSince, speedLogged;
@@ -337,7 +338,10 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         Paint paint = new Paint();
         paint.setFilterBitmap(false);
         SharedPreferences sp = getSharedPreferences(MainActivity.PREFS, MODE_PRIVATE);
-        boolean grid = "grid".equals(Options.look(sp));
+        String look = Options.look(sp);
+        boolean grid = "grid".equals(look);
+        boolean crt = "crt".equals(look);
+        boolean scan = "scanlines".equals(look) || crt;
         if (Options.panelColours(sp)) {
             /* like the CHGame's ST7735: a little less saturated, blacks a touch lifted */
             android.graphics.ColorMatrix cm = new android.graphics.ColorMatrix();
@@ -349,6 +353,10 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         }
         Paint lines = new Paint();
         lines.setColor(0x38000000);
+        Paint glow = new Paint();               /* CRT: the picture again, filtered, at 25% over the sharp one */
+        glow.setFilterBitmap(true);
+        glow.setAlpha(64);
+        glow.setColorFilter(paint.getColorFilter());
         boolean overlay = Options.overlay(sp), bezel = Options.bezel(sp);
         float dp = getResources().getDisplayMetrics().density;
         Paint speed = new Paint(Paint.ANTI_ALIAS_FLAG);     /* the speed line: white, dark shadow */
@@ -407,7 +415,9 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
                 } else {
                     c.drawColor(Color.BLACK);
                 }
-                c.drawBitmap(bmp, src, new Rect(x, y, x + side, y + side), paint);
+                Rect dst = new Rect(x, y, x + side, y + side);
+                c.drawBitmap(bmp, src, dst, paint);
+                if (crt) c.drawBitmap(bmp, src, dst, glow);
                 if (grid && side >= 128 * 3) {
                     /* the LCD look: a thin dark line between pixels */
                     float step = side / 128f;
@@ -417,6 +427,8 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
                         c.drawLine(x, y + o, x + side, y + o, lines);
                     }
                 }
+                Bitmap sc = scanBmp;
+                if (scan && sc != null && sc.getWidth() == side) c.drawBitmap(sc, x, y, null);   /* scanlines, CRT vignette */
                 if (overlay && speedText.length() > 0)
                     c.drawText(speedText, 6 * dp, 6 * dp + speed.getTextSize(), speed);
                 h.unlockCanvasAndPost(c);
@@ -440,7 +452,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     }
 
     /** Twice a second: the speed line (fps, percent of 60, ms in Native.frame per frame);
-     *  every 5 seconds the same line goes to the log, for adb logcat. */
+     *  every 5 seconds the same line goes to the log, for logcat. */
     private void speedTick() {
         long now = System.nanoTime();
         long span = now - speedSince;
@@ -489,6 +501,29 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         p.setTextSize(r);
         c.drawText("A", bx + r, ay + 0.35f * r, p);
         c.drawText("B", bx - r, by + 0.35f * r, p);
+        return bmp;
+    }
+
+    /** The scanlines over the picture, drawn once per surface size (main thread): a bitmap the size
+     *  of the picture, clear but for a dark band (about 45% black) across the bottom 35% of each
+     *  pixel row; CRT adds a vignette, darkening the corners to about 45% black. */
+    private static Bitmap buildScanlines(int side, boolean vignette) {
+        Bitmap bmp = Bitmap.createBitmap(side, side, Bitmap.Config.ARGB_8888);
+        Canvas c = new Canvas(bmp);
+        Paint p = new Paint();
+        float step = side / 128f;
+        p.setColor(0x73000000);
+        for (int i = 0; i < 128; i++) {
+            float top = i * step;
+            c.drawRect(0, top + 0.65f * step, side, top + step, p);
+        }
+        if (vignette) {
+            float mid = side / 2f;
+            p.setShader(new android.graphics.RadialGradient(mid, mid, mid * 1.414f,
+                    new int[] { 0x00000000, 0x73000000 }, new float[] { 0.6f, 1f },
+                    android.graphics.Shader.TileMode.CLAMP));
+            c.drawRect(0, 0, side, side, p);
+        }
         return bmp;
     }
 
@@ -635,8 +670,23 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     }
 
     @Override public void surfaceCreated(SurfaceHolder h) { holder = h; if (hasWindowFocus()) resumeGame(); }
-    @Override public void surfaceChanged(SurfaceHolder h, int f, int w, int hh) { holder = h; }
-    @Override public void surfaceDestroyed(SurfaceHolder h) { pauseGame(); holder = null; }
+    @Override public void surfaceChanged(SurfaceHolder h, int f, int w, int hh) {
+        holder = h;
+        /* the picture's size, as the loop works it out: the overlays are cached for it. The old one is
+           only dropped here (the loop may be drawing it); surfaceDestroyed recycles it */
+        String look = Options.look(getSharedPreferences(MainActivity.PREFS, MODE_PRIVATE));
+        boolean scan = "scanlines".equals(look) || "crt".equals(look);
+        int side = Math.min(w, hh);
+        if (!fill) side = Math.max(1, side / 128) * 128;
+        scanBmp = scan ? buildScanlines(side, "crt".equals(look)) : null;
+    }
+    @Override public void surfaceDestroyed(SurfaceHolder h) {
+        pauseGame();
+        holder = null;
+        Bitmap sc = scanBmp;
+        scanBmp = null;
+        if (sc != null) sc.recycle();     /* pauseGame has stopped the loop: nothing draws it now */
+    }
 
     /* ---------------------------------------------------------------- */
     /* Input                                                              */
