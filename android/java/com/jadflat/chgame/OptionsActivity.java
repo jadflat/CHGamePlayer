@@ -55,6 +55,8 @@ public class OptionsActivity extends Page {
             row("Saves: " + gameTitle, "Its own save, the 4 state slots and the resume point",
                     () -> startActivity(new Intent(this, SavesActivity.class).putExtra("file", gameFile)
                             .putExtra("title", gameTitle)));
+        row("Export saves", "Copies every save, state and picture to CHGame saves in the games folder", this::exportSaves);
+        row("Import saves", "Copies them back; asks before replacing", this::importSaves);
         row("Hidden games", (Options.showHidden(prefs) ? "Shown in the list, marked Hidden" : "Not shown")
                 + " · " + hiddenCount + " hidden. X on a game hides it", () -> {
             prefs.edit().putBoolean("showHidden", !Options.showHidden(prefs)).apply();
@@ -84,6 +86,10 @@ public class OptionsActivity extends Page {
             prefs.edit().putBoolean("fill", !Options.fill(prefs)).apply();
             build();
         });
+        row("Speed overlay", Options.overlay(prefs) ? "On: shows fps, % of real speed and frame time" : "Off", () -> {
+            prefs.edit().putBoolean("overlay", !Options.overlay(prefs)).apply();
+            build();
+        });
 
         section("Screen");
         row("Look", Options.LOOK_NAMES[indexOf(Options.LOOKS, Options.look(prefs))],
@@ -91,6 +97,10 @@ public class OptionsActivity extends Page {
                         i -> prefs.edit().putString("look", Options.LOOKS[i]).apply()));
         row("Colours", Options.panelColours(prefs) ? "Like the CHGame's own panel (a little softer)" : "As the game draws them", () -> {
             prefs.edit().putBoolean("panel", !Options.panelColours(prefs)).apply();
+            build();
+        });
+        row("Border", Options.bezel(prefs) ? "On: a CHGame-shaped frame beside the picture" : "Off", () -> {
+            prefs.edit().putBoolean("bezel", !Options.bezel(prefs)).apply();
             build();
         });
 
@@ -101,11 +111,17 @@ public class OptionsActivity extends Page {
         row("Volume", Options.volume(prefs),
                 () -> pick("Volume", Options.VOLUMES, indexOf(Options.VOLUMES, Options.volume(prefs)),
                         i -> prefs.edit().putString("volume", Options.VOLUMES[i]).apply()));
+        row("Audio buffer", Options.AUDIO_BUFFER_NAMES[indexOf(Options.AUDIO_BUFFERS, Options.audioBuffer(prefs))],
+                () -> pick("Audio buffer", Options.AUDIO_BUFFER_NAMES, indexOf(Options.AUDIO_BUFFERS, Options.audioBuffer(prefs)),
+                        i -> prefs.edit().putString("audioBuffer", Options.AUDIO_BUFFERS[i]).apply()));
 
         section("Controls");
         Keymap k = Keymap.load(prefs);
         row("Map buttons", "A: " + k.keyFor(Native.A) + " · B: " + k.keyFor(Native.B) + " · Second Up: " + k.keyFor(Keymap.UP2),
                 () -> startActivity(new Intent(this, MapButtonsActivity.class)));
+        row("Touch controls", Options.TOUCH_NAMES[indexOf(Options.TOUCHES, Options.touch(prefs))],
+                () -> pick("Touch controls", Options.TOUCH_NAMES, indexOf(Options.TOUCHES, Options.touch(prefs)),
+                        i -> prefs.edit().putString("touch", Options.TOUCHES[i]).apply()));
 
         section("ES-DE");
         row("ES-DE media folder", mediaName(), this::pickMedia);
@@ -194,6 +210,29 @@ public class OptionsActivity extends Page {
         String vol = colon > 0 ? id.substring(0, colon) : "";
         String path = colon >= 0 ? id.substring(colon + 1) : id;
         return ("primary".equals(vol) ? "Internal storage" : "SD card") + (path.isEmpty() ? "" : " › " + path.replace("/", " › "));
+    }
+
+    /** Every save, state and picture into CHGame saves in the games folder. */
+    private void exportSaves() {
+        Uri t = tree();
+        if (t == null) {
+            Saves.toast(this, "Choose the games folder first");
+            return;
+        }
+        new Thread(() -> {
+            int n = Saves.exportAll(this, t);
+            runOnUiThread(() -> Saves.toast(this, n == 0 ? "Nothing to export" : "Copied " + n + " files to CHGame saves"));
+        }, "export").start();
+    }
+
+    /** Copies CHGame saves back; asks before replacing a save that differs. */
+    private void importSaves() {
+        Uri t = tree();
+        if (t == null) {
+            Saves.toast(this, "Choose the games folder first");
+            return;
+        }
+        Saves.importAll(this, t, this::build);
     }
 
     void pickFolder() {

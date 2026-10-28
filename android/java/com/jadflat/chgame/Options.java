@@ -19,6 +19,10 @@ final class Options {
 
     static String sound(SharedPreferences p) { return p.getString("sound", SOUNDS[0]); }
     static String volume(SharedPreferences p) { return p.getString("volume", "50%"); }
+    static final String[] AUDIO_BUFFERS = { "low", "normal", "high" };
+    static final String[] AUDIO_BUFFER_NAMES = { "Low latency (may crackle)", "Normal", "High (smoothest)" };
+    /** low, normal or high: the sound card's buffer (low answers quickest, high is safest from crackles) */
+    static String audioBuffer(SharedPreferences p) { return p.getString("audioBuffer", "normal"); }
     /** false: the biggest whole-number scale (sharp, even pixels); true: as tall as the screen */
     static boolean fill(SharedPreferences p) { return p.getBoolean("fill", false); }
     static boolean showHidden(SharedPreferences p) { return p.getBoolean("showHidden", false); }
@@ -82,6 +86,15 @@ final class Options {
     static String look(SharedPreferences p) { return p.getString("look", "sharp"); }
     /** true: colours toned like the CHGame's own panel (a little less saturated) */
     static boolean panelColours(SharedPreferences p) { return p.getBoolean("panel", false); }
+
+    static final String[] TOUCHES = { "auto", "on", "off" };
+    static final String[] TOUCH_NAMES = { "Automatic: hidden once a gamepad is used", "Always", "Off" };
+    /** auto, on or off: the on-screen controls (auto hides them once a gamepad button is pressed) */
+    static String touch(SharedPreferences p) { return p.getString("touch", "off"); }
+    /** true: a CHGame-shaped frame beside the picture */
+    static boolean bezel(SharedPreferences p) { return p.getBoolean("bezel", false); }
+    /** true: the speed overlay (fps, % of real speed and frame time) */
+    static boolean overlay(SharedPreferences p) { return p.getBoolean("overlay", false); }
 
     static final String[] SNAPS = { "title", "play" };
     static final String[] SNAP_NAMES = { "The title screen", "The title, then some play (presses START and A)" };

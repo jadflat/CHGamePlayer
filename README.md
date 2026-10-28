@@ -16,6 +16,8 @@ play as they do on the real board.
 No games are included: put your `.CHG` files (and any `.DAT` files they use) in a folder and
 choose it in the app.
 
+An illustrated how-to with screenshots: [docs/HOW-TO.md](docs/HOW-TO.md).
+
 **Download:** the APK is on the [releases page](../../releases). Setup, ES-DE and every option:
 [docs/GUIDE.md](docs/GUIDE.md).
 

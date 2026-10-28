@@ -1,6 +1,7 @@
 package com.jadflat.chgame;
 
 import android.app.AlertDialog;
+import android.content.Intent;
 import android.content.SharedPreferences;
 import android.os.Bundle;
 
@@ -50,7 +51,16 @@ public class GameSettingsActivity extends Page {
                 Options.setGame(prefs, file, "volume", null);
                 build();
             });
+        section("Buttons");
+        row("Buttons", prefs.contains("keymap:" + file) ? "Own mapping" : "The main mapping", () ->
+                startActivity(new Intent(this, MapButtonsActivity.class).putExtra("file", file).putExtra("title", title)));
         focus();
+    }
+
+    @Override
+    protected void onRestart() {
+        super.onRestart();
+        build();
     }
 
     interface IntCallback { void run(int i); }

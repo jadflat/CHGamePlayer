@@ -31,7 +31,7 @@ for l in c m dl; do
     $ZIG cc -target aarch64-linux-musl -nostdlib -shared -fPIC $OUT/stub.c -Wl,-soname,lib$l.so -o $OUT/stubs/lib$l.so
 done
 SRC="libretro/libretro.c emu/src/rv32.c emu/src/bus.c emu/src/machine.c emu/src/st7735.c emu/src/audio.c
-     emu/src/piezo_filter.c emu/src/loader.c emu/src/sdspi.c emu/src/sdcard.c emu/src/bootloader_image.c
+     emu/src/piezo_filter.c emu/src/loader.c emu/src/sdspi.c emu/src/sdcard.c emu/src/bootloader_image.c emu/src/gif.c
      libretro/android_shim.c android/jni/frontend.c android/jni/jni.c"
 OBJS=""
 for s in $SRC; do

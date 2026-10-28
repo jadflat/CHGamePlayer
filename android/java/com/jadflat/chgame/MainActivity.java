@@ -13,10 +13,12 @@ import android.graphics.Outline;
 import android.graphics.Paint;
 import android.graphics.Rect;
 import android.graphics.drawable.ColorDrawable;
+import android.hardware.input.InputManager;
 import android.net.Uri;
 import android.os.Bundle;
 import android.text.TextUtils;
 import android.view.Gravity;
+import android.view.InputDevice;
 import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewGroup;
@@ -48,7 +50,7 @@ import java.util.concurrent.Executors;
  * Options, where everything else lives.
  */
 public class MainActivity extends Activity {
-    static final String VERSION = "0.24";
+    static final String VERSION = "0.28";
     static final String PREFS = "chgame";
 
     private SharedPreferences prefs;
@@ -248,12 +250,55 @@ public class MainActivity extends Activity {
         }
         showMute();
         refresh();
+        ((InputManager) getSystemService(INPUT_SERVICE)).registerInputDeviceListener(pads, null);
+        offerTouch();
     }
 
     @Override
     protected void onPause() {
         super.onPause();
         preview.stop();
+        ((InputManager) getSystemService(INPUT_SERVICE)).unregisterInputDeviceListener(pads);
+    }
+
+    /* ---------------------------------------------------------------- */
+    /* Touch controls: off by default; offered once a run when no pad is  */
+    /* connected (a Retroid's own controls count as one), and again when  */
+    /* a pad is unplugged                                                 */
+    /* ---------------------------------------------------------------- */
+
+    private static boolean touchOffered;
+
+    private final InputManager.InputDeviceListener pads = new InputManager.InputDeviceListener() {
+        @Override public void onInputDeviceAdded(int id) { }
+        @Override public void onInputDeviceChanged(int id) { }
+        @Override public void onInputDeviceRemoved(int id) {
+            touchOffered = false;
+            offerTouch();
+        }
+    };
+
+    static boolean hasPad() {
+        for (int id : InputDevice.getDeviceIds()) {
+            InputDevice d = InputDevice.getDevice(id);
+            if (d == null || d.isVirtual()) continue;
+            int s = d.getSources();
+            if ((s & InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD
+                    || (s & InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK) return true;
+        }
+        return false;
+    }
+
+    private void offerTouch() {
+        if (touchOffered || !"off".equals(Options.touch(prefs)) || hasPad()) return;
+        touchOffered = true;
+        new android.app.AlertDialog.Builder(this, Ui.dialogTheme())
+                .setTitle("No controller found")
+                .setMessage("Show touch controls on the screen in games? They hide again once a controller "
+                        + "is used. Options → Touch controls changes this later.")
+                .setPositiveButton("Turn on touch controls", (d, w) -> prefs.edit().putString("touch", "auto").apply())
+                .setNegativeButton("Not now", null)
+                .show();
     }
 
     /** The mute button's look: hidden when previews are off in Options. */
@@ -584,6 +629,28 @@ public class MainActivity extends Activity {
 
     private void play(int pos) {
         if (pos < 0 || pos >= games.size()) return;
+        Files.Entry e = games.get(pos);
+        /* a game that names card files not in the games folder: say so, and let the player start anyway */
+        Cart c = carts.get(e.uri);
+        if (c == null) {
+            try { c = Cart.read(getContentResolver(), e.uri); } catch (Exception ignored) { }
+        }
+        List<String> missing = missingDats(c);
+        if (missing.isEmpty()) {
+            start(pos);
+            return;
+        }
+        new android.app.AlertDialog.Builder(this, Ui.dialogTheme())
+                .setTitle("Missing card file")
+                .setMessage(displayTitle(e) + " needs " + TextUtils.join(", ", missing)
+                        + " on the SD card. Put it in the games folder.")
+                .setPositiveButton("Start anyway", (d, w) -> start(pos))
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    /** Starts the game at pos. */
+    private void start(int pos) {
         preview.stop();
         previewing = false;
         Files.Entry e = games.get(pos);
@@ -593,6 +660,20 @@ public class MainActivity extends Activity {
         i.putExtra("name", fileName(e));
         i.putExtra("title", displayTitle(e));
         startActivity(i);
+    }
+
+    /** The card files a game names that are not in the games folder (the app's SD card). */
+    List<String> missingDats(Cart c) {
+        List<String> missing = new ArrayList<>();
+        if (c == null || c.dats.isEmpty()) return missing;
+        Set<String> have = new HashSet<>();
+        Uri t = tree();
+        if (t != null)
+            for (Files.Entry f : Files.list(getContentResolver(), t))
+                have.add(f.path.substring(f.path.lastIndexOf('/') + 1).toUpperCase(Locale.ROOT));
+        for (String d : c.dats)
+            if (!have.contains(d)) missing.add(d);
+        return missing;
     }
 
     private void openOptions() {
@@ -651,15 +732,11 @@ public class MainActivity extends Activity {
             if (c.license != null && !c.license.isEmpty()) s.append("\nLicence: ").append(c.license).append("\n");
             s.append(c.picture != null ? "\nHas a cartridge picture" : "\nNo cartridge picture").append("\n");
             if (!c.dats.isEmpty()) {
-                /* the card files it names, against what is in the games folder (the app's SD card) */
-                java.util.Set<String> have = new java.util.HashSet<>();
-                Uri t = tree();
-                if (t != null)
-                    for (Files.Entry f : Files.list(getContentResolver(), t))
-                        have.add(f.path.substring(f.path.lastIndexOf('/') + 1).toUpperCase(java.util.Locale.ROOT));
+                /* the card files it names, against what is in the games folder */
+                List<String> missing = missingDats(c);
                 s.append("\nNeeds on the SD card:");
                 for (String d : c.dats)
-                    s.append("\n  ").append(d).append(have.contains(d) ? "  \u2713 in the games folder" : "  \u2717 MISSING: put it in the games folder");
+                    s.append("\n  ").append(d).append(!missing.contains(d) ? "  \u2713 in the games folder" : "  \u2717 MISSING: put it in the games folder");
                 s.append("\n");
             }
         }

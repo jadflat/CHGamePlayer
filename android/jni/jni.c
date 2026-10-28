@@ -4,8 +4,10 @@
  */
 #include <jni.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "frontend.h"
+#include "gif.h"
 
 #define AUDIO_MAX 4096      /* stereo samples a frame can return; a frame makes 800 */
 
@@ -94,4 +96,53 @@ JNIEXPORT void JNICALL Java_com_jadflat_chgame_Native_stop(JNIEnv *env, jclass c
         fclose(log_file);
         log_file = NULL;
     }
+}
+
+/* the screen recorder (emu/src/gif.c): one recording at a time, 128x128 */
+static Gif gif;
+static bool recording;
+static uint32_t gif_px[128 * 128];
+
+JNIEXPORT jboolean JNICALL Java_com_jadflat_chgame_Native_gifBegin(JNIEnv *env, jclass cls)
+{
+    if (recording) gif_abort(&gif);
+    recording = gif_begin(&gif, 128, 128);
+    return recording ? JNI_TRUE : JNI_FALSE;
+}
+
+/* argb: int[128 * 128]; the alpha byte is dropped, as the GIF has none */
+JNIEXPORT void JNICALL Java_com_jadflat_chgame_Native_gifFrame(JNIEnv *env, jclass cls,
+    jintArray argb, jdouble seconds)
+{
+    if (!recording || !argb || (*env)->GetArrayLength(env, argb) < 128 * 128) return;
+    (*env)->GetIntArrayRegion(env, argb, 0, 128 * 128, (jint *)gif_px);
+    for (int i = 0; i < 128 * 128; i++) gif_px[i] &= 0x00FFFFFF;
+    gif_frame(&gif, gif_px, seconds);
+}
+
+/* finishes the recording and writes the file; false if none was running or the write failed */
+JNIEXPORT jboolean JNICALL Java_com_jadflat_chgame_Native_gifEnd(JNIEnv *env, jclass cls, jstring path)
+{
+    if (!recording) return JNI_FALSE;
+    recording = false;
+    char p[1024];
+    size_t size = 0;
+    uint8_t *data = gif_end(&gif, &size);
+    if (!data) return JNI_FALSE;
+    bool ok = false;
+    if (get_path(env, path, p, sizeof p)) {
+        FILE *f = fopen(p, "wb");
+        if (f) {
+            ok = fwrite(data, 1, size, f) == size;
+            ok = fclose(f) == 0 && ok;
+        }
+    }
+    free(data);
+    return ok ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT void JNICALL Java_com_jadflat_chgame_Native_gifAbort(JNIEnv *env, jclass cls)
+{
+    if (recording) gif_abort(&gif);
+    recording = false;
 }

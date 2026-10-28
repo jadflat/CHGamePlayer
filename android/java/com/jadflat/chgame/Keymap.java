@@ -15,25 +15,40 @@ final class Keymap {
     static final int FAST = 1 << 17;   /* not a CHGame button: fast-forward while held */
     static final int UP2 = 1 << 18;    /* a second key for Up */
     static final int REWIND = 1 << 19; /* not a CHGame button: rewind while held */
+    static final int SHOT = 1 << 20;   /* not a CHGame button: a screenshot on key down */
+    static final int QSAVE = 1 << 21;  /* not a CHGame button: quick save to slot 1 on key down */
+    static final int QLOAD = 1 << 22;  /* not a CHGame button: quick load from slot 1 on key down */
 
     static final int[] BUTTONS = { Native.UP, Native.DOWN, Native.LEFT, Native.RIGHT,
-            Native.A, Native.B, Native.START, Native.SELECT, MENU, FAST, UP2, REWIND };
+            Native.A, Native.B, Native.START, Native.SELECT, MENU, FAST, UP2, REWIND, SHOT, QSAVE, QLOAD };
     static final String[] NAMES = { "Up", "Down", "Left", "Right", "A", "B", "START", "SELECT", "Menu",
-            "Fast-forward (hold)", "Up (second button)", "Rewind (hold)" };
+            "Fast-forward (hold)", "Up (second button)", "Rewind (hold)", "Screenshot",
+            "Quick save", "Quick load" };
     static final int FIRST_EXTRA = 8;  /* BUTTONS from here on are the app's, not the board's */
     /* Android's BUTTON_B is the right face button, BUTTON_A the bottom one */
     private static final int[] DEFAULT_KEYS = { KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN,
             KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_BUTTON_B,
             KeyEvent.KEYCODE_BUTTON_A, KeyEvent.KEYCODE_BUTTON_START, KeyEvent.KEYCODE_BUTTON_SELECT,
             KeyEvent.KEYCODE_BUTTON_MODE, KeyEvent.KEYCODE_BUTTON_R1, KeyEvent.KEYCODE_BUTTON_X,
-            KeyEvent.KEYCODE_BUTTON_L2 };
+            KeyEvent.KEYCODE_BUTTON_L2, 0, KeyEvent.KEYCODE_BUTTON_THUMBL, KeyEvent.KEYCODE_BUTTON_THUMBR };
+    /* 0: no key by default (Screenshot) */
 
     /** keycode -> button bit */
     final SparseIntArray map = new SparseIntArray();
 
     static Keymap load(SharedPreferences prefs) {
+        return parse(prefs, prefs.getString("keymap", null));
+    }
+
+    /** A game's own mapping if it has one, else the main mapping. */
+    static Keymap load(SharedPreferences prefs, String gameFile) {
+        String s = gameFile == null ? null : prefs.getString("keymap:" + gameFile, null);
+        return s != null ? parse(prefs, s) : load(prefs);
+    }
+
+    /** Reads "keycode:button,..." (null: nothing saved, so the defaults), then the migrations. */
+    private static Keymap parse(SharedPreferences prefs, String s) {
         Keymap k = new Keymap();
-        String s = prefs.getString("keymap", null);
         if (s != null) {
             for (String pair : s.split(",")) {
                 String[] kv = pair.split(":");
@@ -53,22 +68,41 @@ final class Keymap {
         /* and one saved before rewind existed: L2, if L2 is free */
         if (k.map.indexOfValue(REWIND) < 0 && k.map.get(KeyEvent.KEYCODE_BUTTON_L2, 0) == 0)
             k.map.put(KeyEvent.KEYCODE_BUTTON_L2, REWIND);
+        /* and quick save and quick load, from before they existed: L3 and R3, if those are free */
+        if (k.map.indexOfValue(QSAVE) < 0 && k.map.get(KeyEvent.KEYCODE_BUTTON_THUMBL, 0) == 0)
+            k.map.put(KeyEvent.KEYCODE_BUTTON_THUMBL, QSAVE);
+        if (k.map.indexOfValue(QLOAD) < 0 && k.map.get(KeyEvent.KEYCODE_BUTTON_THUMBR, 0) == 0)
+            k.map.put(KeyEvent.KEYCODE_BUTTON_THUMBR, QLOAD);
         return k;
     }
 
     void save(SharedPreferences prefs) {
+        save(prefs, null);
+    }
+
+    /** The main mapping, or a game's own when gameFile is set. */
+    void save(SharedPreferences prefs, String gameFile) {
         StringBuilder s = new StringBuilder();
         for (int i = 0; i < map.size(); i++) {
             if (s.length() > 0) s.append(',');
             s.append(map.keyAt(i)).append(':').append(map.valueAt(i));
         }
+        if (gameFile != null) {
+            prefs.edit().putString("keymap:" + gameFile, s.toString()).apply();
+            return;
+        }
         prefs.edit().putString("keymap", s.toString()).remove("swap")
                 .putBoolean("up2Cleared", map.indexOfValue(UP2) < 0).apply();
     }
 
+    /** Drops a game's own mapping, so it follows the main one again. */
+    static void forget(SharedPreferences prefs, String gameFile) {
+        prefs.edit().remove("keymap:" + gameFile).apply();
+    }
+
     void defaults(boolean swapAB) {
         map.clear();
-        for (int i = 0; i < BUTTONS.length; i++) map.put(DEFAULT_KEYS[i], BUTTONS[i]);
+        for (int i = 0; i < BUTTONS.length; i++) if (DEFAULT_KEYS[i] != 0) map.put(DEFAULT_KEYS[i], BUTTONS[i]);
         if (swapAB) {
             map.put(KeyEvent.KEYCODE_BUTTON_A, Native.A);
             map.put(KeyEvent.KEYCODE_BUTTON_B, Native.B);

@@ -15,6 +15,7 @@
 #include <string.h>
 #include <stdarg.h>
 #include <sys/stat.h>
+#include <dirent.h>
 #ifdef _WIN32
 #include <direct.h>
 #define make_dir(p) _mkdir(p)
@@ -28,7 +29,7 @@
 #include "audio.h"
 #include "sdcard.h"
 
-#define CORE_VERSION    "0.2"
+#define CORE_VERSION    "0.3"
 #define AUDIO_RATE      48000
 #define FPS             60
 #define FRAME_CYCLES    (CHG_HCLK / FPS)
@@ -191,6 +192,103 @@ static const char *base_name(const char *path)
     return s ? s + 1 : path;
 }
 
+/* The .DAT names a program asks for, found the way android/java/.../Cart.java
+   finds them: NAME.DAT with NAME of 1-8 of [A-Z0-9_], not part of a longer
+   word. A .CHG (CHG1) is searched over its program only, from byte 512 for the
+   length at 0x10; any other file over all of its bytes. */
+#define DAT_MAX  16
+static bool is_word_ch(int c)  { return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_'; }
+static bool is_alnum_ch(int c) { return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9'); }
+static bool is_name_ch(int c)  { return (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'; }
+
+static int find_dat_names(const uint8_t *d, size_t n, char out[][16])
+{
+    int count = 0;
+    for (size_t i = 0; i < n && count < DAT_MAX; i++) {
+        if (i > 0 && is_word_ch(d[i - 1])) continue;
+        for (size_t len = 1; len <= 8 && i + len + 4 <= n; len++) {
+            if (!is_name_ch(d[i + len - 1])) break;
+            if (d[i + len] != '.' || memcmp(d + i + len, ".DAT", 4) != 0) continue;
+            if (i + len + 4 < n && is_alnum_ch(d[i + len + 4])) break;
+            char name[16];
+            memcpy(name, d + i, len);
+            memcpy(name + len, ".DAT", 5);
+            int dup = 0;
+            for (int k = 0; k < count && !dup; k++) dup = !strcmp(out[k], name);
+            if (!dup) memcpy(out[count++], name, len + 5);
+            break;
+        }
+    }
+    return count;
+}
+
+static bool same_name_ci(const char *a, const char *b)
+{
+    for (; *a && *b; a++, b++) {
+        int x = *a, y = *b;
+        if (x >= 'a' && x <= 'z') x -= 32;
+        if (y >= 'a' && y <= 'z') y -= 32;
+        if (x != y) return false;
+    }
+    return *a == *b;
+}
+
+static bool sd_has_file(const char *dir, const char *name)
+{
+    DIR *d = opendir(dir);
+    if (!d) return false;
+    bool found = false;
+    for (struct dirent *e; !found && (e = readdir(d)) != NULL; )
+        found = same_name_ci(e->d_name, name);
+    closedir(d);
+    return found;
+}
+
+/* Tells the player about .DAT files the game needs that are not on the card */
+static void check_dat_files(const char *path, const char *card_dir)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) return;
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (size <= 0 || size > 16 << 20) { fclose(f); return; }
+    uint8_t *data = malloc((size_t)size);
+    if (!data) { fclose(f); return; }
+    size_t n = fread(data, 1, (size_t)size, f);
+    fclose(f);
+
+    size_t from = 0, to = n;
+    if (n >= 512 && !memcmp(data, "CHG1", 4)) {
+        const uint32_t len = data[0x10] | data[0x11] << 8 | data[0x12] << 16 | (uint32_t)data[0x13] << 24;
+        from = 512;
+        to = (len < n - 512) ? 512 + len : n;
+    }
+
+    char names[DAT_MAX][16];
+    const int count = find_dat_names(data + from, to - from, names);
+    free(data);
+
+    char msg[256];
+    size_t used = 0;
+    int missing = 0;
+    for (int k = 0; k < count; k++) {
+        if (sd_has_file(card_dir, names[k])) continue;
+        int w = snprintf(msg + used, sizeof msg - used, "%s%s", missing ? ", " : "", names[k]);
+        if (w < 0 || (size_t)w >= sizeof msg - used) break;
+        used += (size_t)w;
+        missing++;
+    }
+    if (!missing) return;
+
+    static char shown[300];
+    snprintf(shown, sizeof shown, "Missing on the SD card: %s (put %s in system/chgame/sdcard)",
+             msg, missing > 1 ? "them" : "it");
+    core_log(RETRO_LOG_WARN, "%s", shown);
+    struct retro_message rm = { shown, 600 };
+    env_cb(RETRO_ENVIRONMENT_SET_MESSAGE, &rm);
+}
+
 RETRO_API bool retro_load_game(const struct retro_game_info *game)
 {
     if (!game || !game->path) return false;
@@ -255,6 +353,7 @@ RETRO_API bool retro_load_game(const struct retro_game_info *game)
     apply_options();
     last_sync = m.cycles;
     loaded = true;
+    if (m.sd) check_dat_files(game->path, sd_path);
     return true;
 }
 

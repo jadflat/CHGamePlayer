@@ -3,8 +3,8 @@
      folder the user picks with Android's own picker (a document tree). -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.jadflat.chgame"
-    android:versionCode="24"
-    android:versionName="0.24">
+    android:versionCode="28"
+    android:versionName="0.28">
 
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="36" />
     <uses-feature android:name="android.hardware.gamepad" android:required="false" />

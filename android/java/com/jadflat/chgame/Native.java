@@ -20,6 +20,14 @@ final class Native {
     static native boolean saveState(String path);
     static native boolean loadState(String path);
     static native void stop();
+    /** Starts a GIF recording of the 128x128 screen; a running one is dropped first. */
+    static native boolean gifBegin();
+    /** Adds the 128x128 ARGB screen (alpha ignored), shown for 'seconds' since the last frame. */
+    static native void gifFrame(int[] argb, double seconds);
+    /** Finishes the recording and writes it to path; false if none was running or the write failed. */
+    static native boolean gifEnd(String path);
+    /** Drops the running GIF recording, if any. */
+    static native void gifAbort();
 
     private Native() {}
 }

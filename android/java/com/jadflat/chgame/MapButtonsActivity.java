@@ -12,18 +12,21 @@ import android.view.KeyEvent;
  */
 public class MapButtonsActivity extends Page {
     private SharedPreferences prefs;
+    private String file, title;     /* set when mapping one game's own buttons */
 
     @Override
     protected void onCreate(Bundle saved) {
         super.onCreate(saved);
         prefs = getSharedPreferences(MainActivity.PREFS, MODE_PRIVATE);
+        file = getIntent().getStringExtra("file");
+        title = getIntent().getStringExtra("title");
         build();
     }
 
     @Override
     void build() {
-        header("Map buttons");
-        Keymap k = Keymap.load(prefs);
+        header(title != null ? "Map buttons: " + title : "Map buttons");
+        Keymap k = Keymap.load(prefs, file);
         section("CHGame buttons");
         for (int i = 0; i < Keymap.BUTTONS.length; i++) {
             if (i == Keymap.FIRST_EXTRA) section("Extras");
@@ -35,9 +38,15 @@ public class MapButtonsActivity extends Page {
         row("Reset to defaults", "The d-pad, A and B, START and SELECT as labelled, the menu on the home "
                 + "button, fast-forward on R1, Up also on Y (left)", () -> {
             k.defaults(false);
-            k.save(prefs);
+            k.save(prefs, file);
             build();
         });
+        if (file != null)
+            row("Use the main mapping", prefs.contains("keymap:" + file) ? "This game has its own buttons"
+                    : "Uses the main mapping", () -> {
+                Keymap.forget(prefs, file);
+                build();
+            });
         row("The left stick always works as the d-pad, and BACK always opens the menu", null, null);
         focus();
     }
@@ -73,7 +82,7 @@ public class MapButtonsActivity extends Page {
         if (i >= Keymap.FIRST_EXTRA)
             b.setNeutralButton("No key", (dialog, w) -> {
                 k.clear(Keymap.BUTTONS[i]);
-                k.save(prefs);
+                k.save(prefs, file);
                 build();
             });
         AlertDialog d = b.create();
@@ -81,7 +90,7 @@ public class MapButtonsActivity extends Page {
             if (ev.getAction() != KeyEvent.ACTION_DOWN || ev.getRepeatCount() > 0) return true;
             if (code != KeyEvent.KEYCODE_BACK) {
                 k.set(code, Keymap.BUTTONS[i]);
-                k.save(prefs);
+                k.save(prefs, file);
             }
             dialog.dismiss();
             build();
