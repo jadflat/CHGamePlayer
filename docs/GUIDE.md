@@ -1,31 +1,27 @@
-# Playing CHGame games on a Retroid Pocket (and in RetroArch on a PC)
+# Playing CHGame games on a Retroid Pocket
 
-This guide covers three ways to play CHGame `.CHG` games on an Android handheld such as the
-Retroid Pocket Nova, plus RetroArch on Windows:
+This guide covers playing CHGame `.CHG` games on an Android handheld such as the Retroid Pocket
+Nova, with the **CHGame Player** app, alone or started from the ES-DE game list:
 
 | | What it is | Best for |
 |---|---|---|
 | **A. CHGame Player** | a small app of its own (`CHGamePlayer-0.20.apk`) | the simplest setup |
-| **B. RetroArch core** | `chgame_libretro_android.so`, loaded by RetroArch | shaders, overlays, RetroArch hotkeys |
-| **C. ES-DE** | a game-list front end that starts A or B for you | one menu for every system you play |
-| **D. RetroArch on a PC** | `chgame_libretro.dll` | testing on Windows |
+| **B. ES-DE** | a game-list front end that starts the app for you | one menu for every system you play |
 
-A and B run the same emulator code (joyrider3774's CHGame Emulator), so a game plays the same
-in both. Their saves are kept apart, though: a game saved in one isn't seen by the other.
+The RetroArch (libretro) core for the same emulator is a separate project:
+https://github.com/jadflat/CHGame-libretro. Its saves and the app's are kept apart: a game saved in one isn't seen by the
+other (a game's save can be exported and imported between them, see *Saves and the SD card*).
 
 ---
 
 ## What goes where: the files
 
-Release files, from the `build/` folder:
+Release file:
 
 | File | For |
 |---|---|
-| `CHGamePlayer-0.20.apk` | A, and C (standalone option) |
-| `chgame_libretro_android.so` | B, and C (RetroArch option) |
-| `chgame_libretro.info` | B: the core's name and details in RetroArch |
-| `chgame_libretro.dll` | D |
-| `frontends/es_systems.xml`, `frontends/es_find_rules.xml` | C |
+| `CHGamePlayer-0.20.apk` | A, and B |
+| `frontends/es_systems.xml`, `frontends/es_find_rules.xml` | B |
 
 Your games:
 - **`.CHG`**: a game, for example `Starlift.CHG` or `CHix.CHG`.
@@ -52,7 +48,7 @@ give it.
 
 ### Set up your games folder
 1. Make a folder for CHGame games, for example `/storage/emulated/0/ROMs/chgame`. If you'll
-   use ES-DE (part C), use exactly that folder: ES-DE expects it there.
+   use ES-DE (part B), use exactly that folder: ES-DE expects it there.
 2. Copy your `.CHG` files **and** any `.DAT` files into it. `.DAT` files go at the top of the
    folder, not in a subfolder, the same as on the root of a real CHGame card.
 3. Open CHGame Player. The first time it asks for your games folder: press **Choose folder**,
@@ -147,7 +143,7 @@ B or BACK goes back to the list.
 | Sound | Sound | *Bare pin*, the buzzer pin's signal and the emulator's default, or *Piezo*, imitating the CHGame's small speaker |
 | | Volume | 20% to 150%; default 50% |
 | ES-DE | ES-DE media folder | where to put videos, screenshots and covers: choose `ES-DE/downloaded_media` |
-| | Make videos, screenshots and covers | for every game (or the selected one), see part C |
+| | Make videos, screenshots and covers | for every game (or the selected one), see part B |
 | Controls | Map buttons | see below |
 | About | | version and credits |
 
@@ -205,80 +201,11 @@ key, which stays on the PC where the app was built.
 
 ---
 
-## B. The RetroArch core
+## B. ES-DE (full setup)
 
-### 1. Install RetroArch from the website
-RetroArch's own site marks the Google Play versions as out of date and recommends its website
-APK. ES-DE also warns against the Play version.
-
-1. If *RetroArch* or *RetroArch Plus* from the Play Store is installed, uninstall it.
-   *RetroArch Plus* has the same package name as the 64-bit website build, so the two clash.
-2. Download **`RetroArch_aarch64.apk`** (the 64-bit build, package `com.retroarch.aarch64`)
-   from <https://www.retroarch.com/?page=platforms>, Android section. 1.22.2 was current on
-   28 Oct 2026. Install it like any APK.
-3. Start RetroArch once, allow its storage access, and let it finish setting up. Its folders
-   are then at `/storage/emulated/0/RetroArch/`.
-
-### 2. The info file
-RetroArch keeps core info files inside the app, where you can't copy to without root, so give
-it a folder you can write to:
-
-1. Make the folder `/storage/emulated/0/RetroArch/info`.
-2. In RetroArch: **Settings → Directory → Core Info**, browse to that folder, and choose
-   **<Use This Directory>**.
-3. Copy `chgame_libretro.info` into it.
-4. **Main Menu → Online Updater → Update Core Info Files**. The other cores' info files are
-   downloaded into the new folder, so they keep their names too.
-
-### 3. The core
-1. Copy `chgame_libretro_android.so` into `/storage/emulated/0/RetroArch/downloads/`. Keep the
-   name exactly as it is.
-2. In RetroArch: **Main Menu → Load Core → Install or Restore a Core**, then pick
-   `chgame_libretro_android.so`. RetroArch copies it into its own cores folder.
-3. **Load Core** now lists **CHGame (CHGame Emulator)**.
-
-### 4. The SD card folder
-Copy the `.DAT` files into:
-
-    /storage/emulated/0/RetroArch/system/chgame/sdcard/
-
-If the folder isn't there, make it (the core also makes it the first time a game starts). Every
-game shares this one folder, as games share one card on a CHGame. A file a game writes to the
-card is written back here every few seconds and when you close the game.
-
-### 5. Play
-**Load Core → CHGame**, then **Load Content**, and pick a `.CHG`. Or load the `.CHG` first and
-pick CHGame when RetroArch asks which core to use.
-
-| CHGame button | RetroPad (RetroArch's controller) |
-|---|---|
-| D-pad | d-pad or left stick |
-| A | A, the **right** face button |
-| B | B, the **bottom** face button |
-| START / SELECT | Start / Select |
-
-To change it: **Quick Menu → Controls → Port 1 Controls**.
-
-**Core options** (Quick Menu → Core Options):
-
-| Option | Choices | |
-|---|---|---|
-| Sound | bare pin / piezo | *bare pin* is the buzzer pin's signal (the emulator's default); *piezo* imitates the small speaker |
-| Volume | 10% to 150% | default 50% |
-| microSD card | folder / off | *off* runs with no card |
-| Internal upscale (nearest) | 1x to 6x | sends a bigger picture with sharp pixels, for shaders that need it. Otherwise leave it at 1x and turn on **Settings → Video → Scaling → Integer Scale** |
-
-**Saves:** a game's own saves go to `/storage/emulated/0/RetroArch/saves/` (RetroArch may sort
-them into a `CHGame` subfolder) as `<game>.sav`. **Save states** work as usual (Quick Menu →
-Save State), at about 1 MB each. A state holds the whole machine but not the files on the SD card.
-
----
-
-## C. ES-DE (full setup)
-
-ES-DE shows your games in one menu with artwork and starts the right emulator. You can set it up
-to start CHGame games with **either** the app (A) or RetroArch (B), and switch between them.
-Before starting, set up A, B, or both, and check that a game starts from it directly.
+ES-DE shows your games in one menu with artwork and starts the right emulator. It starts CHGame games with the app (A) or, if you also install the separate
+[RetroArch core](https://github.com/jadflat/CHGame-libretro), with RetroArch, and you can switch between them.
+Before starting, set up the app (A) and check that a game starts from it directly.
 
 ### 1. Install ES-DE
 ES-DE for Android is sold through the developer's **Patreon** (<https://www.patreon.com/es_de>),
@@ -301,7 +228,7 @@ for now.
    - **App (A):** in the same `ROMs/chgame` folder, and in the app choose it as the games folder (*Options → Games folder*)
      and pick `ROMs/chgame`. Do this once. ES-DE lists only the `.CHG` files, so the `.DAT`
      files don't show up as games.
-   - **RetroArch (B):** in `/storage/emulated/0/RetroArch/system/chgame/sdcard/`, as in B4.
+   - **RetroArch (the core):** in `/storage/emulated/0/RetroArch/system/chgame/sdcard/`, as the core's guide says.
    - **Both:** put a copy in each place.
 
 ### 4. Tell ES-DE about CHGame
@@ -360,29 +287,17 @@ Restart ES-DE afterwards.
 |---|---|
 | No *CHGame* system | the XML files aren't in `ES-DE/custom_systems/`, ES-DE wasn't restarted, `ROMs/chgame` has no `.CHG` files, or a file was pasted in wrong. Check the end of `ES-DE/logs/es_log.txt` |
 | "Couldn't find emulator" for CHGame Player | `es_find_rules.xml` is missing or the app isn't installed |
-| Black screen or hang with RetroArch | the core isn't installed (B3); ES-DE can't check for that |
+| Black screen or hang with RetroArch | the core isn't installed (see the core's guide); ES-DE can't check for that |
 | RetroArch starts but complains about the core | you have the Play Store RetroArch, or the core's file name was changed |
 | STARLIFT says *NEED STARLIFT.DAT* (more than a moment) | the `.DAT` isn't where that emulator looks (step 3) |
 | The app says "Could not open the game" | ES-DE passed something that isn't a `.CHG` |
 
 ---
 
-## D. RetroArch on Windows
-
-1. Copy `chgame_libretro.dll` into RetroArch's `cores` folder and `chgame_libretro.info` into
-   its `info` folder (for example `C:\RetroArch-Win64\cores` and `...\info`).
-2. Put `.DAT` files in `<RetroArch>\system\chgame\sdcard\`.
-3. **Load Core → CHGame**, then **Load Content**. The buttons and options are as in part B.
-
-It runs at about 6-7x real time on one core of a mid-range laptop CPU, so any PC that runs
-RetroArch is fast enough.
-
----
-
 ## Speed
 
 On a Retroid Pocket Nova a running game uses about half of one CPU core, so it keeps full speed
-with room to spare. On a PC the core runs 6-7 times faster than real time on one core.
+with room to spare.
 
 ## Credits
 
@@ -390,5 +305,5 @@ CHGame Emulator by **joyrider3774** (MIT): all of the emulation.
 CHGame by **Kevin Bates** (bateske, https://chgame.website; Apache-2.0); the bootloader embedded in
 the emulator is MIT. The game-name font is Press Start 2P by CodeMan38
 (SIL OFL 1.1). Each game's makers are credited in the app's *About this game*.
-RetroArch and libretro by the libretro team. ES-DE by Leon Styhre. The libretro core, the app
+RetroArch and libretro by the libretro team. ES-DE by Leon Styhre. The app
 and this guide: jadflat.

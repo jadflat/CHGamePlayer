@@ -1,7 +1,7 @@
-CHGame libretro core and CHGame Player
+CHGame Player
 
 This repository's own code (libretro/libretro.c, libretro/android_shim.c,
-android/, test/, tools/, build scripts) is MIT licensed, see LICENSE.
+android/, tools/, build scripts) is MIT licensed, see LICENSE.
 
 It includes:
 
