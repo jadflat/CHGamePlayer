@@ -50,7 +50,7 @@ import java.util.concurrent.Executors;
  * Options, where everything else lives.
  */
 public class MainActivity extends Activity {
-    static final String VERSION = "0.28";
+    static final String VERSION = "0.29";
     static final String PREFS = "chgame";
 
     private SharedPreferences prefs;
@@ -194,7 +194,7 @@ public class MainActivity extends Activity {
         hints.setOrientation(LinearLayout.HORIZONTAL);
         hints.setGravity(Gravity.CENTER);
         hints.setPadding(0, Ui.dp(this, 10), 0, 0);
-        for (String[] h : new String[][] { { "A", "Play" }, { "Y", "Favourite" }, { "X", "Hide" }, { "L2/R2", "Letter" } }) {
+        for (String[] h : new String[][] { { "A", "Play" }, { "Y", "Favourite" }, { "X", "Hide" } }) {
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT);
             lp.setMargins(Ui.dp(this, 4), 0, Ui.dp(this, 4), 0);
@@ -743,7 +743,7 @@ public class MainActivity extends Activity {
         s.append("\nFile: ").append(e.path);
         if (e.size > 0) s.append(" (").append(e.size / 1024).append(" KB)");
         long time = Stats.time(this, fileName(e)), last = Stats.last(this, fileName(e));
-        s.append("\nPlayed: ").append(time > 0 ? Stats.duration(time) : "not yet");
+        s.append("\nPlayed: ").append(time > 0 ? Stats.duration(time) : last > 0 ? "under a minute" : "not yet");
         if (last > 0) s.append(", last ").append(Stats.when(last));
         new android.app.AlertDialog.Builder(this, Ui.dialogTheme()).setTitle(displayTitle(e))
                 .setMessage(s).setPositiveButton("OK", null).show();
