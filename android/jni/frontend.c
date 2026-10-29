@@ -12,6 +12,7 @@
 
 void chgame_flush(void);
 bool chgame_screen_ready(void);
+unsigned long long chgame_sd_reads(void);
 
 static char sys_dir[1024], save_dir[1024];
 static uint32_t *out_px;            /* where this frame's picture goes */
@@ -155,6 +156,11 @@ bool fe_screen_ready(void)
     return running && chgame_screen_ready();
 }
 
+unsigned long long fe_sd_reads(void)
+{
+    return running ? chgame_sd_reads() : 0;
+}
+
 void fe_flush(void)
 {
     if (running) chgame_flush();
@@ -181,9 +187,10 @@ bool fe_load_state(const char *path)
     const size_t n = retro_serialize_size();
     void *buf = malloc(n);
     FILE *f = fopen(path, "rb");
-    bool ok = buf && f && fread(buf, 1, n, f) == n;
+    /* a state may be older (shorter): the core says which sizes it knows */
+    const size_t got = buf && f ? fread(buf, 1, n, f) : 0;
     if (f) fclose(f);
-    ok = ok && retro_unserialize(buf, n);
+    const bool ok = got > 0 && retro_unserialize(buf, got);
     free(buf);
     return ok;
 }

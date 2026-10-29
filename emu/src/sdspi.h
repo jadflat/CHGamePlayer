@@ -22,6 +22,9 @@ typedef struct {
     uint64_t lba;
 } ChgSdSpi;
 
+/* running count of blocks read, for front ends that wait for loading to settle */
+extern uint64_t sdspi_blocks_read;
+
 void    sdspi_reset(ChgSdSpi *c);
 /* one byte each way while the card is selected */
 uint8_t sdspi_xfer(ChgSdSpi *c, struct SdCard *card, uint8_t mosi);

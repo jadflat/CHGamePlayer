@@ -33,6 +33,19 @@ final class Options {
     /** sound, video or off: the selected game running in the list */
     static String preview(SharedPreferences p) { return p.getString("preview", "sound"); }
 
+    static final String[] PREVIEW_MODES = { "live", "video", "picture" };
+    static final String[] PREVIEW_MODE_NAMES = { "Live (the game runs, emulated)", "Video (the ES-DE clip, falling back to live)", "Picture only" };
+    /** live, video or picture: what the list's preview shows */
+    static String previewMode(SharedPreferences p) { return p.getString("previewMode", "live"); }
+    /** The mode for one game: its own (pref preview:<file>) when set, else the global one. */
+    static String previewMode(SharedPreferences p, String file) {
+        String g = p.getString("preview:" + file, null);
+        return g != null ? g : previewMode(p);
+    }
+
+    /** off (default) or on: a soft click as the highlight moves, a blip on A */
+    static boolean menuSounds(SharedPreferences p) { return p.getBoolean("menuSounds", false); }
+
     static final String[] SORTS = { "name", "played", "added" };
     static final String[] SORT_NAMES = { "By name", "Most played", "Recently added" };
     /** name, played or added: the order of games inside each section of the list */
@@ -88,6 +101,10 @@ final class Options {
     static String look(SharedPreferences p) { return p.getString("look", "sharp"); }
     /** true: the game list as a grid of big cart pictures instead of rows */
     static boolean gridList(SharedPreferences p) { return p.getBoolean("gridList", false); }
+    /** true: the game list has one collapsible group a developer (the board and card games group nests in bateske's) */
+    static boolean groupByDeveloper(SharedPreferences p) { return p.getBoolean("groupByDeveloper", false); }
+    /** true (default): the "Board and card games" group is in the list; false: left out */
+    static boolean boardCards(SharedPreferences p) { return p.getBoolean("boardCards", true); }
     /** true: colours toned like the CHGame's own panel (a little less saturated) */
     static boolean panelColours(SharedPreferences p) { return p.getBoolean("panel", false); }
 
@@ -103,6 +120,12 @@ final class Options {
     static boolean bezel(SharedPreferences p) { return p.getBoolean("bezel", false); }
     /** true: the speed overlay (fps, % of real speed and frame time) */
     static boolean overlay(SharedPreferences p) { return p.getBoolean("overlay", false); }
+
+    /** The quit combo: two keys held or pressed in turn (M2 then START by default), held 2 s or not, or off. */
+    static int quitKey1(SharedPreferences p) { return p.getInt("quitKey1", android.view.KeyEvent.KEYCODE_BUTTON_Z); }
+    static int quitKey2(SharedPreferences p) { return p.getInt("quitKey2", android.view.KeyEvent.KEYCODE_BUTTON_START); }
+    static boolean quitHold(SharedPreferences p) { return p.getBoolean("quitHold", false); }
+    static boolean quitOff(SharedPreferences p) { return p.getBoolean("quitOff", false); }
 
     static final String[] SNAPS = { "title", "play" };
     static final String[] SNAP_NAMES = { "The title screen", "The title, then some play (presses START and A)" };

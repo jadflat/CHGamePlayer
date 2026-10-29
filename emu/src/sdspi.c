@@ -53,8 +53,11 @@ static void put_block(ChgSdSpi *c, const uint8_t *data, int n)
     put(c, 0xFF);
 }
 
+uint64_t sdspi_blocks_read;     /* blocks the card has been asked for, all machines */
+
 static bool read_block(struct SdCard *card, uint64_t lba, uint8_t out[512])
 {
+    sdspi_blocks_read++;
     if (!card || !sdcard_read(card, lba, out, 1)) {
         memset(out, 0xFF, 512);
         return false;

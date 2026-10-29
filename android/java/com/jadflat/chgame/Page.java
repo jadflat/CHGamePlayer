@@ -25,10 +25,12 @@ abstract class Page extends Activity {
     private LinearLayout card;                      /* the section rows go into */
     private final List<View> rows = new ArrayList<>();  /* the rows that do something, in order */
     private int focusRow;
+    int indent;                                     /* rows added from now on are indented this many steps */
 
     @Override
     protected void onCreate(Bundle saved) {
         super.onCreate(saved);
+        overridePendingTransition(android.R.anim.fade_in, android.R.anim.fade_out);
         ScrollView scroll = new ScrollView(this);
         scroll.setBackgroundColor(Ui.BG);
         scroll.setFillViewport(true);
@@ -38,6 +40,17 @@ abstract class Page extends Activity {
         scroll.addView(page);
         setContentView(scroll);
         Ui.edgeToEdge(this, scroll);
+        /* a pad's first key leaves touch mode: that is when the cursor can land on a row
+           (before it, requestFocus is refused and the first press shows nothing) */
+        scroll.getViewTreeObserver().addOnTouchModeChangeListener(inTouch -> {
+            if (!inTouch && getCurrentFocus() == null) focus();
+        });
+    }
+
+    @Override
+    public void finish() {
+        super.finish();
+        overridePendingTransition(android.R.anim.fade_in, android.R.anim.fade_out);
     }
 
     /** Makes the page; starts with header() and ends with focus(). */
@@ -47,6 +60,7 @@ abstract class Page extends Activity {
         page.removeAllViews();
         rows.clear();
         card = null;
+        indent = 0;
         LinearLayout head = new LinearLayout(this);
         head.setOrientation(LinearLayout.HORIZONTAL);
         head.setGravity(Gravity.CENTER_VERTICAL);
@@ -68,7 +82,14 @@ abstract class Page extends Activity {
     /** The pad's place again after a rebuild. */
     void focus() {
         if (rows.isEmpty()) return;
-        rows.get(Math.min(focusRow, rows.size() - 1)).requestFocus();
+        View r = rows.get(Math.min(focusRow, rows.size() - 1));
+        r.requestFocus();
+        /* once the window is up: take the focus again if it was lost, and redraw the highlight */
+        r.post(() -> {
+            if (!r.isFocused()) r.requestFocus();
+            r.refreshDrawableState();
+            r.invalidate();
+        });
     }
 
     /** A new section: its name, then a card its rows go into. */
@@ -107,7 +128,7 @@ abstract class Page extends Activity {
         LinearLayout r = new LinearLayout(this);
         r.setOrientation(LinearLayout.HORIZONTAL);
         r.setGravity(Gravity.CENTER_VERTICAL);
-        r.setPadding(Ui.dp(this, 20), Ui.dp(this, 14), Ui.dp(this, 16), Ui.dp(this, 14));
+        r.setPadding(Ui.dp(this, 20 + 20 * indent), Ui.dp(this, 14), Ui.dp(this, 16), Ui.dp(this, 14));
         LinearLayout text = new LinearLayout(this);
         text.setOrientation(LinearLayout.VERTICAL);
         text.addView(Ui.text(this, title, 17, action != null ? Ui.ON_SURFACE : Ui.ON_SURFACE_VARIANT, Ui.REGULAR));
@@ -127,8 +148,10 @@ abstract class Page extends Activity {
             r.setBackground(Ui.card(this, android.graphics.Color.TRANSPARENT, 0));
             r.setFocusable(true);
             rows.add(r);
+            r.setOnFocusChangeListener((v, has) -> { if (has && v.isInTouchMode() == false) Ui.sfx(this, false); });
             r.setOnClickListener(v -> {
                 focusRow = index;
+                Ui.sfx(this, true);
                 action.run();
             });
         }
@@ -141,9 +164,18 @@ abstract class Page extends Activity {
             /* information rows take the pad's focus too, so the page can scroll to its last lines */
             r.setBackground(Ui.card(this, android.graphics.Color.TRANSPARENT, 0));
             r.setFocusable(true);
+            rows.add(r);               /* counted, so a row that turns into information keeps the pad's place */
         }
         card.addView(r, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT));
+    }
+
+    /* a new window can come up without the pad's cursor on a row (nothing shows
+       until the second press): put it on the first row once the window has focus */
+    @Override
+    public void onWindowFocusChanged(boolean has) {
+        super.onWindowFocusChanged(has);
+        if (has && getCurrentFocus() == null) focus();
     }
 
     /* B or BACK: back to the list */

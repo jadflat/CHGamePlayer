@@ -14,7 +14,10 @@
           "name": "STARLIFT.DAT",
           "url": "https://github.com/jadflat/Starlift/releases/download/v0.24/STARLIFT.DAT"
         }
-      ]
+      ],
+      "chgTitle": "STARLIFT",
+      "chgAuthor": "Jadflat",
+      "version": "0.24"
     },
     {
       "name": "CHix",
@@ -26,7 +29,10 @@
           "name": "CHix.CHG",
           "url": "https://github.com/jadflat/CHix/releases/download/v1.2.3/CHix.CHG"
         }
-      ]
+      ],
+      "chgTitle": "CHix",
+      "chgAuthor": "Jadflat",
+      "version": "1.2.3"
     },
     {
       "name": "CHarth",
@@ -38,7 +44,10 @@
           "name": "CHarth.CHG",
           "url": "https://github.com/jadflat/CHarth/releases/download/v1.0/CHarth.CHG"
         }
-      ]
+      ],
+      "chgTitle": "CHarth",
+      "chgAuthor": "Jadflat",
+      "version": "1.0"
     }
   ]
 }

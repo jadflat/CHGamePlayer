@@ -11,6 +11,10 @@ import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.RippleDrawable;
 import android.graphics.drawable.StateListDrawable;
 import android.os.Build;
+import android.content.SharedPreferences;
+import android.media.AudioAttributes;
+import android.media.AudioFormat;
+import android.media.AudioTrack;
 import android.view.View;
 import android.view.Window;
 import android.view.WindowInsets;
@@ -55,6 +59,44 @@ final class Ui {
             }
         }
         return pixel;
+    }
+
+    private static AudioTrack clickTrack, blipTrack;
+
+    /** Menu sounds (Options > Game list): a soft click when the highlight moves (blip false), a higher blip
+     *  on A or open. Two tiny PCM buffers made here; silent when off or when the preview is muted. */
+    static void sfx(Context c, boolean blip) {
+        try {
+            SharedPreferences p = c.getSharedPreferences(MainActivity.PREFS, Context.MODE_PRIVATE);
+            if (!p.getBoolean("menuSounds", false) || "video".equals(Options.preview(p))) return;
+            if (clickTrack == null) {
+                clickTrack = tone(1100, 900, 18);
+                blipTrack = tone(1500, 2200, 55);
+            }
+            AudioTrack t = blip ? blipTrack : clickTrack;
+            if (t == null) return;
+            t.stop();
+            t.setPlaybackHeadPosition(0);
+            t.play();
+        } catch (Exception ignored) { }
+    }
+
+    private static AudioTrack tone(int hz, int hz2, int ms) {
+        int rate = 22050, n = rate * ms / 1000;
+        short[] pcm = new short[n];
+        for (int i = 0; i < n; i++) {
+            double f = hz + (hz2 - hz) * (double) i / n, env = 1 - (double) i / n;
+            pcm[i] = (short) (Math.sin(2 * Math.PI * f * i / rate) * env * env * 3000);
+        }
+        AudioTrack t = new AudioTrack.Builder()
+                .setAudioAttributes(new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_GAME)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build())
+                .setAudioFormat(new AudioFormat.Builder().setSampleRate(rate)
+                        .setChannelMask(AudioFormat.CHANNEL_OUT_MONO).setEncoding(AudioFormat.ENCODING_PCM_16BIT).build())
+                .setBufferSizeInBytes(n * 2).setTransferMode(AudioTrack.MODE_STATIC).build();
+        t.write(pcm, 0, n);
+        t.setVolume(0.6f);
+        return t;
     }
 
     static int dp(Context c, float v) {

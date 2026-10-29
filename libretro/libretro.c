@@ -35,7 +35,8 @@
 #define FRAME_CYCLES    (CHG_HCLK / FPS)
 #define FRAME_SAMPLES   (AUDIO_RATE / FPS)
 #define MAX_SCALE       6
-#define SAVE_STATE_MAGIC 0x43484731u   /* "CHG1" */
+#define SAVE_STATE_MAGIC_V1 0x43484731u   /* "CHG1": the machine and audio only */
+#define SAVE_STATE_MAGIC 0x43484732u      /* "CHG2": and where the card's files sit */
 
 static retro_environment_t        env_cb;
 static retro_video_refresh_t      video_cb;
@@ -388,6 +389,12 @@ RETRO_API bool chgame_screen_ready(void)
     return loaded && m.lcd.display_on && !m.lcd.sleeping && m.lcd.rst_level && m.lcd.frames_written > 0;
 }
 
+/* Not part of libretro: SD blocks read so far (a count that stops rising: loading is done) */
+RETRO_API unsigned long long chgame_sd_reads(void)
+{
+    return (unsigned long long)sdspi_blocks_read;
+}
+
 RETRO_API void retro_reset(void)
 {
     write_save();
@@ -473,6 +480,18 @@ typedef struct {
     uint32_t size;
     ChgMachine m;
     ChgAudio audio;
+} StateV1;
+
+/* The card is not copied (the front end owns it, and it can be 44 MB of a game's
+   sprites), but where its files sit is: the game's FatFs holds sector numbers,
+   so on a card built differently (another file in the folder) they read the wrong
+   data. The SPI and SD protocol state, a read in flight included, is in m. */
+typedef struct {
+    uint32_t magic;
+    uint32_t size;
+    ChgMachine m;
+    ChgAudio audio;
+    SdLayout layout;
 } State;
 
 RETRO_API size_t retro_serialize_size(void) { return sizeof(State); }
@@ -481,24 +500,41 @@ RETRO_API bool retro_serialize(void *data, size_t size)
 {
     if (size < sizeof(State)) return false;
     State *s = (State *)data;
+    memset(&s->layout, 0, sizeof s->layout);
     s->magic = SAVE_STATE_MAGIC;
     s->size = (uint32_t)sizeof(State);
     memcpy(&s->m, &m, sizeof m);
     s->m.sd = NULL;
     memcpy(&s->audio, &audio, sizeof audio);
+    if (m.sd) sdcard_layout_get(m.sd, &s->layout);
     return true;
 }
 
 RETRO_API bool retro_unserialize(const void *data, size_t size)
 {
-    if (size < sizeof(State)) return false;
     const State *s = (const State *)data;
-    if (s->magic != SAVE_STATE_MAGIC || s->size != sizeof(State)) return false;
+    const ChgMachine *sm;
+    const ChgAudio *sa;
+    const SdLayout *layout = NULL;
+    if (size >= sizeof(State) && s->magic == SAVE_STATE_MAGIC && s->size == sizeof(State)) {
+        sm = &s->m; sa = &s->audio; layout = &s->layout;
+    } else if (size >= sizeof(StateV1) && s->magic == SAVE_STATE_MAGIC_V1 && s->size == sizeof(StateV1)) {
+        /* an older state: no layout, the card is taken as it is */
+        const StateV1 *o = (const StateV1 *)data;
+        sm = &o->m; sa = &o->audio;
+    } else {
+        return false;
+    }
     struct SdCard *sd = m.sd;
     const float volume = audio.volume;
     const bool piezo = audio.piezo;
-    memcpy(&m, &s->m, sizeof m);
-    memcpy(&audio, &s->audio, sizeof audio);
+    /* the card first, then the machine: it may be reading mid-block */
+    if (sd && layout && layout->card_size) {
+        if (!sdcard_layout_apply(sd, layout))
+            core_log(RETRO_LOG_WARN, "SD card: could not restore the saved layout");
+    }
+    memcpy(&m, sm, sizeof m);
+    memcpy(&audio, sa, sizeof audio);
     m.sd = sd;
     audio.volume = volume;
     audio.piezo = piezo;

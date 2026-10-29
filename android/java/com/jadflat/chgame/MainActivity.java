@@ -33,9 +33,11 @@ import android.widget.ListView;
 import android.widget.TextView;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.TreeMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -50,11 +52,11 @@ import java.util.concurrent.Executors;
  * Options, where everything else lives.
  */
 public class MainActivity extends Activity {
-    static final String VERSION = "0.37";
+    static final String VERSION = "0.45";
     static final String PREFS = "chgame";
 
     private SharedPreferences prefs;
-    private TextView count, version, artTitle, artInfo, artPort;
+    private TextView count, version, artTitle, artInfo, artPlayed, artPort, dupBanner;
     private Preview preview;
     private TextView mute;
     private View[] headIcons;                                   /* the header buttons the pad can reach, left to right */
@@ -64,11 +66,17 @@ public class MainActivity extends Activity {
     private final GameAdapter adapter = new GameAdapter();
     private final List<Files.Entry> games = new ArrayList<>();         /* in list order */
     private final List<Object> rows = new ArrayList<>();               /* a section's name (String) or a game's index (Integer) */
+    private final List<Integer> depths = new ArrayList<>();            /* parallel to rows: how far a row is indented */
+    private int groupRow = -1;                                  /* the selected group row, or -1 when a game is selected */
+    private long toggledAt;                                     /* the key and the click can both arrive: one toggle */
     private Set<String> hidden = new HashSet<>(), favs = new HashSet<>();
     private int shownRow = -1;                                  /* a game can be on two rows (Favourites, Last played) */
+    private final Map<String, Integer> sectionCounts = new HashMap<>();   /* games in each section, shown in its header */
     private final Map<Uri, String> titles = new HashMap<>();   /* the title in each header */
     private final Map<Uri, Cart> carts = new HashMap<>();      /* picture, author, version */
     private final Set<Uri> loading = new HashSet<>();
+    private final Map<String, Bitmap> snaps = new HashMap<>();   /* ES-DE title screenshots for carts without a picture */
+    private final Set<String> snapTried = new HashSet<>();
     private final ExecutorService reader = Executors.newSingleThreadExecutor();
     private String treeSeen;                                    /* the folder the caches are for */
     private int generation;                                     /* drops a listing a newer one replaced */
@@ -134,6 +142,14 @@ public class MainActivity extends Activity {
         headIcons = new View[] { find, mute, gear };
         head.setPadding(Ui.dp(this, 4), 0, 0, Ui.dp(this, 12));
         left.addView(head);
+        /* two .CHG files that are the same game: a row above the list leads to the tidy-up page */
+        dupBanner = Ui.text(this, "", 14, Ui.PRIMARY, Ui.MEDIUM);
+        dupBanner.setPadding(Ui.dp(this, 12), Ui.dp(this, 8), Ui.dp(this, 12), Ui.dp(this, 8));
+        dupBanner.setBackground(Ui.card(this, Color.TRANSPARENT, 12));
+        dupBanner.setFocusable(true);
+        dupBanner.setVisibility(View.GONE);
+        dupBanner.setOnClickListener(v -> startActivity(new Intent(this, DuplicatesActivity.class)));
+        left.addView(dupBanner);
 
         FrameLayout body = new FrameLayout(this);
         list = new ListView(this);
@@ -144,6 +160,7 @@ public class MainActivity extends Activity {
         list.setChoiceMode(AbsListView.CHOICE_MODE_SINGLE);
         list.setVerticalScrollBarEnabled(false);
         list.setOnItemClickListener((p, v, row, id) -> {
+            if (isGroup(row)) { toggleGroup(row); return; }
             int g = gameAt(row);
             if (g < 0) return;
             if (row == shownRow) play(g);
@@ -168,6 +185,11 @@ public class MainActivity extends Activity {
             @Override public void onItemSelected(AdapterView<?> p, View v, int row, long id) {
                 int g = gameAt(row);
                 if (g >= 0) select(g, row);
+                else if (isGroup(row)) {
+                    groupRow = row;
+                    list.setItemChecked(row, true);
+                    groupCard();
+                }
             }
             @Override public void onNothingSelected(AdapterView<?> p) { }
         });
@@ -188,6 +210,7 @@ public class MainActivity extends Activity {
         right.setBackground(Ui.rounded(this, Ui.SURFACE, 28));
         right.setPadding(Ui.dp(this, 16), Ui.dp(this, 16), Ui.dp(this, 16), Ui.dp(this, 14));
         art = new ArtView(this, 12);
+        art.fade = true;
         art.fill = true;            /* as big as the panel allows, not a whole-number scale */
         right.addView(art, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1));
         art.setOnClickListener(v -> { if (shown >= 0) play(shown); });     /* a tap on the picture starts the selected game */
@@ -205,6 +228,12 @@ public class MainActivity extends Activity {
         artInfo = Ui.text(this, "", 15, Ui.ON_SURFACE_VARIANT, Ui.REGULAR);
         artInfo.setGravity(Gravity.CENTER);
         info.addView(artInfo);
+        artPlayed = Ui.text(this, "", 15, Ui.ON_SURFACE_VARIANT, Ui.REGULAR);
+        artPlayed.setGravity(Gravity.CENTER);
+        artPlayed.setSingleLine(true);
+        artPlayed.setEllipsize(TextUtils.TruncateAt.END);
+        artPlayed.setVisibility(View.GONE);
+        info.addView(artPlayed);
         artPort = Ui.text(this, "", 13, Ui.ON_PRIMARY_CONTAINER, Ui.MEDIUM);
         artPort.setBackground(Ui.rounded(this, Ui.PRIMARY_CONTAINER, 8));
         artPort.setPadding(Ui.dp(this, 10), Ui.dp(this, 4), Ui.dp(this, 10), Ui.dp(this, 4));
@@ -230,7 +259,7 @@ public class MainActivity extends Activity {
 
         setContentView(root);
         Ui.edgeToEdge(this, root);
-        preview = new Preview(this, b -> art.set(b));
+        preview = new Preview(this, b -> art.setNow(b));
     }
 
     @Override
@@ -260,6 +289,7 @@ public class MainActivity extends Activity {
         } else {
             info.setVisibility(View.VISIBLE);
         }
+        stripColumn(!small);
         int from = art.getLayoutParams().height, to = small ? Ui.dp(this, 40) : stripSide;
         stripAnim = android.animation.ValueAnimator.ofInt(from, to);
         stripAnim.setDuration(220);
@@ -268,6 +298,19 @@ public class MainActivity extends Activity {
             art.setLayoutParams(new LinearLayout.LayoutParams(s, s));
         });
         stripAnim.start();
+    }
+
+    /** Portrait strip: expanded is a centred column (picture, title); collapsed is the one-line bar (picture left, title right). */
+    private void stripColumn(boolean column) {
+        topRow.setOrientation(column ? LinearLayout.VERTICAL : LinearLayout.HORIZONTAL);
+        topRow.setGravity(column ? Gravity.CENTER_HORIZONTAL : Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams tp = column
+                ? new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+                : new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1);
+        if (column) tp.setMargins(0, Ui.dp(this, 8), 0, 0); else tp.setMargins(Ui.dp(this, 14), 0, 0, 0);
+        artTitle.setLayoutParams(tp);
+        artTitle.setGravity(column ? Gravity.CENTER : Gravity.START);
+        artTitle.setMaxLines(column ? 2 : 3);
     }
 
     private boolean portrait() {
@@ -280,15 +323,17 @@ public class MainActivity extends Activity {
         if (stripAnim != null) stripAnim.cancel();
         list.removeCallbacks(expandLater);
         info.setVisibility(View.VISIBLE);
+        artPlayed.setVisibility(port ? View.VISIBLE : View.GONE);
         stripSmall = false;
         stripSide = 0;
         root.setOrientation(port ? LinearLayout.VERTICAL : LinearLayout.HORIZONTAL);
         root.removeAllViews();
         if (right.getParent() != null) ((android.view.ViewGroup) right.getParent()).removeView(right);
         art.fill = !port;
-        hintRow.setVisibility(port ? View.GONE : View.VISIBLE);
         /* a narrow screen has no room beside the name: wrapped, the version stood one letter a line */
-        version.setVisibility(port ? View.GONE : View.VISIBLE);
+        boolean shortScreen = getResources().getConfiguration().screenHeightDp < 420;   /* a phone on its side (the Nova is 480) */
+        version.setVisibility(port || shortScreen ? View.GONE : View.VISIBLE);
+        hintRow.setVisibility(port || shortScreen ? View.GONE : View.VISIBLE);
         right.setOrientation(LinearLayout.VERTICAL);
         right.setGravity(Gravity.CENTER_HORIZONTAL);
         if (topRow == null) { topRow = new LinearLayout(this); topRow.setGravity(Gravity.CENTER_VERTICAL); }
@@ -299,25 +344,32 @@ public class MainActivity extends Activity {
             /* header on top, then a strip: picture and title side by side, the info text under them */
             int pad = Ui.dp(this, 10);
             right.setPadding(pad, pad, pad, pad);
-            int side = (int) (getResources().getDisplayMetrics().heightPixels * 0.22f) - 2 * pad;
-            side = side >= 256 ? side / 128 * 128 : Math.max(side, 96);     /* whole-number scale if it fits */
+            int hpx = getResources().getDisplayMetrics().heightPixels;
+            int wpx = getResources().getDisplayMetrics().widthPixels - Ui.dp(this, 40) - 2 * pad;
+            /* whole-number scale of 128: as wide as fits, at most 30% of the height */
+            int side = Math.max(1, Math.min(wpx / 128, (int) (hpx * 0.30f) / 128)) * 128;
             art.setLayoutParams(new LinearLayout.LayoutParams(side, side));
             stripSide = side;
             topRow.addView(art);
             artTitle.setPadding(0, 0, 0, 0);
-            artTitle.setMaxLines(3);
-            LinearLayout.LayoutParams tp = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1);
-            tp.setMargins(Ui.dp(this, 14), 0, 0, 0);
-            topRow.addView(artTitle, tp);
+            topRow.addView(artTitle);
+            stripColumn(true);
             right.addView(topRow, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT));
-            info.setGravity(Gravity.START);
+            info.setGravity(Gravity.CENTER_HORIZONTAL);
+            artInfo.setSingleLine(true);
+            artInfo.setEllipsize(TextUtils.TruncateAt.END);
+            LinearLayout.LayoutParams pl = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT);
+            pl.setMargins(0, Ui.dp(this, 8), 0, 0);
+            artPlayed.setLayoutParams(pl);
+            artInfo.setTextSize(14);
+            artPlayed.setTextSize(14);
+            artTitle.setTextSize(11);
             LinearLayout.LayoutParams ip = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT);
             ip.setMargins(0, Ui.dp(this, 8), 0, 0);
             right.addView(info, ip);
-            artTitle.setGravity(Gravity.START);
-            artInfo.setGravity(Gravity.START);
             LinearLayout.LayoutParams rp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT);
             rp.setMargins(0, 0, 0, Ui.dp(this, 12));
@@ -325,11 +377,19 @@ public class MainActivity extends Activity {
             root.addView(left, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
                     LinearLayout.LayoutParams.MATCH_PARENT));
         } else {
+            artInfo.setSingleLine(false);
+            artInfo.setTextSize(shortScreen ? 13 : 15);
+            artTitle.setTextSize(shortScreen ? 13 : 17);
+            /* a short screen: one line each, so the picture keeps the height */
+            artPlayed.setTextSize(shortScreen ? 13 : 15);
+            artPlayed.setSingleLine(shortScreen);
+            artPlayed.setEllipsize(shortScreen ? TextUtils.TruncateAt.END : null);
             right.setPadding(Ui.dp(this, 16), Ui.dp(this, 16), Ui.dp(this, 16), Ui.dp(this, 14));
             art.setLayoutParams(new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1));
             right.addView(art);
             artTitle.setPadding(0, Ui.dp(this, 12), 0, Ui.dp(this, 4));
-            artTitle.setMaxLines(2);
+            artTitle.setMaxLines(shortScreen ? 1 : 2);
+            artTitle.setEllipsize(TextUtils.TruncateAt.END);
             info.addView(artTitle, 0, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT));
             info.setGravity(Gravity.CENTER_HORIZONTAL);
@@ -393,6 +453,8 @@ public class MainActivity extends Activity {
             loading.clear();
             treeSeen = t;
         }
+        snaps.clear();                  /* the media maker may have made new screenshots */
+        snapTried.clear();
         showMute();
         gridMode = Options.gridList(prefs);     /* the refresh below builds the rows in this layout */
         refresh();
@@ -404,6 +466,12 @@ public class MainActivity extends Activity {
     protected void onPause() {
         super.onPause();
         preview.stop();
+        if (shown >= 0 && shown < games.size() && shownRow >= 0) {
+            SharedPreferences.Editor ed = prefs.edit().putString("lastPath", games.get(shown).path);
+            View v = list.getChildAt(shownRow - list.getFirstVisiblePosition());
+            if (v != null) ed.putInt("selTop:" + gridMode + getResources().getConfiguration().orientation, v.getTop());
+            ed.apply();
+        }
         ((InputManager) getSystemService(INPUT_SERVICE)).unregisterInputDeviceListener(pads);
     }
 
@@ -492,6 +560,7 @@ public class MainActivity extends Activity {
             games.clear();
             adapter.notifyDataSetChanged();
             listPane.setVisibility(View.GONE);
+            dupBanner.setVisibility(View.GONE);
             emptyPane.setVisibility(View.VISIBLE);
             emptyPane.requestFocus();
             count.setText("No games folder yet");
@@ -517,8 +586,20 @@ public class MainActivity extends Activity {
                 if (c != null) readCarts.put(e.uri, c);
                 read.put(e.uri, title != null ? title : c != null && !c.title.isEmpty() ? c.title : null);
             }
+            Map<String, Integer> same = new HashMap<>();
+            int dups = 0;
+            for (Cart c : readCarts.values()) {
+                String k = Cart.key(new String[] { c.title, c.author });
+                if (c.title.isEmpty()) continue;
+                Integer n = same.get(k);
+                same.put(k, n == null ? 1 : n + 1);
+                if (n != null && n == 1) dups++;
+            }
+            final int dupSets = dups;
             runOnUiThread(() -> {
                 if (gen != generation || isFinishing()) return;
+                dupBanner.setText(dupSets + (dupSets == 1 ? " duplicate game" : " duplicate games") + ": tap to tidy up");
+                dupBanner.setVisibility(dupSets > 0 ? View.VISIBLE : View.GONE);
                 synchronized (titles) {
                     for (Map.Entry<Uri, String> r : read.entrySet())
                         if (r.getValue() != null) titles.put(r.getKey(), r.getValue());
@@ -539,6 +620,7 @@ public class MainActivity extends Activity {
                 hiddenCount++;
                 if (!showHidden) continue;
             }
+            if (!Options.boardCards(prefs) && isBoardCard(e)) continue;
             games.add(e);
         }
         /* CHGame originals first, then ports; in each, by the chosen sort (name, most played, newest file) */
@@ -566,23 +648,110 @@ public class MainActivity extends Activity {
         for (int i = 0; i < games.size(); i++) if (games.get(i).path.equals(lastPath)) pos = i;
         shown = -1;
         shownRow = -1;
+        groupRow = -1;
         if (games.isEmpty()) {
             showSelected();
             return;
         }
         list.requestFocus();
         int row = rowOf(pos);
-        list.setSelectionFromTop(row, headerAbove(row) ? Ui.dp(this, 40) : 0);
+        if (row < 0) {              /* the game is inside a closed group: the first game on show, else the first group */
+            for (int r = 0; r < rows.size() && row < 0; r++) {
+                if (gameAt(r) >= 0) { pos = gameAt(r); row = r; }
+                else if (cellsAt(r) != null) { pos = cellsAt(r)[0]; row = r; }
+            }
+        }
+        if (row < 0) {
+            for (int r = 0; r < rows.size(); r++) if (isGroup(r)) { groupRow = r; break; }
+            showSelected();
+            if (groupRow >= 0) {
+                if (!gridMode) list.setItemChecked(groupRow, true);
+                list.setSelection(groupRow);
+            }
+            return;
+        }
+        int top = headerAbove(row) ? Ui.dp(this, 40) : 0;
+        String mk = "selTop:" + gridMode + getResources().getConfiguration().orientation;
+        if (prefs.contains(mk)) { top = prefs.getInt(mk, top); prefs.edit().remove(mk).apply(); }   /* reopen where it was */
+        list.setSelectionFromTop(row, top);
         previewing = false;
         select(pos, row);
     }
 
     private static final int RECENT = 1;     /* "Last played": the one game */
 
+    /** A collapsible row in the list: a developer's games, or the board and card games. */
+    private static final class Group {
+        final String key, label;
+        final boolean open;
+        final int first;                                         /* a game in it, for the preview's picture */
+        Group(String key, String label, boolean open, int first) {
+            this.key = key; this.label = label; this.open = open; this.first = first;
+        }
+    }
+
+    /** The files (upper case) that make up "Board and card games": bateske's casino-style set. */
+    private static final Set<String> BOARD_CARD = new HashSet<>(Arrays.asList(
+        "CHCHESS.CHG",
+        "CHCHESS.CHG",
+        "CHBLACKJ.CHG",
+        "CHBLACKJACK.CHG",
+        "CHPOKER.CHG",
+        "CHPOKER.CHG",
+        "CHMAHJON.CHG",
+        "CHMAHJONG.CHG",
+        "CHROULET.CHG",
+        "CHROULETTE.CHG",
+        "CHCRAPS.CHG",
+        "CHCRAPS.CHG",
+        "CHBOARDW.CHG",
+        "CHBOARDWALK.CHG",
+        "CHBACKGA.CHG",
+        "CHBACKGAMMON.CHG",
+        "CHSOLITA.CHG",
+        "CHSOLITAIRE.CHG",
+        "CHCHECKE.CHG",
+        "CHCHECKERS.CHG",
+        "CHYACHT.CHG",
+        "CHYACHT.CHG",
+        "CHFOUR.CHG",
+        "CHFOUR.CHG",
+        "CHTICTAC.CHG",
+        "CHTICTACTOE.CHG",
+        "CHSNAKES.CHG",
+        "CHSNAKES.CHG",
+        "CHSLOTS.CHG",
+        "CHSLOTS.CHG",
+        "CHBINGO.CHG",
+        "CHBINGO.CHG",
+        "CHDOMINO.CHG",
+        "CHDOMINOES.CHG",
+        "CHWORDS.CHG",
+        "CHWORDS.CHG",
+        "CHCROSSW.CHG",
+        "CHCROSSWORD.CHG",
+        "CHWORDWH.CHG",
+        "CHWORDWHEEL.CHG"));
+
+    private static boolean groupOpen(SharedPreferences p, String key) { return p.getBoolean("grp:" + key, false); }
+
+    private static boolean isBoardCard(Files.Entry e) {
+        return BOARD_CARD.contains(fileName(e).toUpperCase(Locale.ROOT));
+    }
+
+    /** The developer a game's cart names; "Other" when it names none. */
+    private String developer(Files.Entry e) {
+        Cart c = carts.get(e.uri);
+        String a = c == null ? "" : c.credit().trim();
+        return a.isEmpty() ? "Other" : a;
+    }
+
     /** The list's rows: each section's name, then its games. Grid mode puts a section's games in rows of gridCols. */
     private void buildRows() {
         gridCols = colsFor(listWidth());
         rows.clear();
+        depths.clear();
+        sectionCounts.clear();
         /* ★ Favourites and Last played first: those games are in their own section too */
         List<Integer> fav = new ArrayList<>(), recent = new ArrayList<>();
         List<Integer> originals = new ArrayList<>(), ports = new ArrayList<>();
@@ -594,17 +763,62 @@ public class MainActivity extends Activity {
         Collections.sort(recent, (a, b) -> Long.compare(Stats.last(this, fileName(games.get(b))),
                 Stats.last(this, fileName(games.get(a)))));
         if (recent.size() > RECENT) recent = recent.subList(0, RECENT);
-        addSection("★ Favourites", fav);
-        if (!portrait()) addSection("Last played", recent);     /* portrait: the strip shows it */
-        addSection("CHGame originals", originals);
-        addSection("Ports", ports);
+        addSection("★ Favourites", fav, false);
+        if (!portrait()) addSection("Last played", recent, false);     /* portrait: the strip shows it */
+        addSection("CHGame originals", originals, true);
+        addSection("Ports", ports, true);
     }
 
-    private void addSection(String name, List<Integer> ids) {
+    private void addSection(String name, List<Integer> ids, boolean grouped) {
         if (ids.isEmpty()) return;
+        sectionCounts.put(name, ids.size());
         rows.add(name);
+        depths.add(0);
+        if (!grouped) {
+            addGames(ids, 0);
+            return;
+        }
+        /* with "Group by developer": one collapsible group a developer (Jadflat first, then A-Z) */
+        TreeMap<String, List<Integer>> devs = new TreeMap<>((a, b) -> {
+            boolean ja = a.equalsIgnoreCase("Jadflat"), jb = b.equalsIgnoreCase("Jadflat");
+            return ja != jb ? (ja ? -1 : 1) : a.compareToIgnoreCase(b);
+        });
+        boolean byDev = Options.groupByDeveloper(prefs);
+        for (int id : ids) {
+            String dev = byDev ? developer(games.get(id)) : "";
+            List<Integer> l = devs.get(dev);
+            if (l == null) devs.put(dev, l = new ArrayList<>());
+            l.add(id);
+        }
+        for (Map.Entry<String, List<Integer>> d : devs.entrySet()) {
+            int depth = 0;
+            if (byDev) {
+                String key = name + ":dev:" + d.getKey();
+                boolean open = groupOpen(prefs, key);
+                addGroup(new Group(key, d.getKey() + " (" + d.getValue().size() + ")", open, d.getValue().get(0)), 0);
+                if (!open) continue;
+                depth = 1;
+            }
+            List<Integer> board = new ArrayList<>(), rest = new ArrayList<>();
+            for (int id : d.getValue()) (isBoardCard(games.get(id)) ? board : rest).add(id);
+            if (!board.isEmpty()) {
+                boolean open = groupOpen(prefs, "board");
+                addGroup(new Group("board", "Board and card games (" + board.size() + ")", open, board.get(0)), depth);
+                if (open) addGames(board, depth + 1);
+            }
+            addGames(rest, depth);
+        }
+    }
+
+    private void addGroup(Group g, int depth) {
+        rows.add(g);
+        depths.add(depth);
+    }
+
+    /** Games as rows, or in grid mode as grid rows of gridCols cells. */
+    private void addGames(List<Integer> ids, int depth) {
         if (!gridMode) {
-            rows.addAll(ids);
+            for (int id : ids) { rows.add(id); depths.add(depth); }
             return;
         }
         for (int i = 0; i < ids.size(); i += gridCols) {
@@ -612,7 +826,32 @@ public class MainActivity extends Activity {
             int[] cells = new int[n];
             for (int k = 0; k < n; k++) cells[k] = ids.get(i + k);
             rows.add(cells);
+            depths.add(depth);
         }
+    }
+
+    private boolean isGroup(int row) {
+        return row >= 0 && row < rows.size() && rows.get(row) instanceof Group;
+    }
+
+    /** Opens or closes the group at row, the group staying selected where it is on the screen. */
+    private void toggleGroup(int row) {
+        if (!isGroup(row) || System.currentTimeMillis() - toggledAt < 300) return;
+        toggledAt = System.currentTimeMillis();
+        Group g = (Group) rows.get(row);
+        prefs.edit().putBoolean("grp:" + g.key, !g.open).apply();
+        View child = list.getChildAt(row - list.getFirstVisiblePosition());
+        int top = child == null ? 0 : child.getTop();
+        buildRows();
+        int now = 0;
+        for (int r = 0; r < rows.size(); r++)
+            if (rows.get(r) instanceof Group && ((Group) rows.get(r)).key.equals(g.key)) now = r;
+        groupRow = now;
+        showSelected();
+        shownRow = shown >= 0 ? rowOf(shown) : -1;
+        adapter.notifyDataSetChanged();
+        if (!gridMode) list.setItemChecked(now, true);
+        list.setSelectionFromTop(now, top);
     }
 
     /** Grid mode's columns: about 200 dp a cell, at least two; portrait: about 240 dp, at least one. */
@@ -638,6 +877,9 @@ public class MainActivity extends Activity {
         boolean moved = pos != shown;
         shown = pos;
         shownRow = row;
+        groupRow = -1;
+        /* remembered at once: a killed app (no onPause) still reopens here */
+        if (moved) prefs.edit().putString("lastPath", games.get(pos).path).apply();
         if (!gridMode) list.setItemChecked(row, true);
         /* the first game of a section: keep its section's name in view above it (the list
            would otherwise scroll the game to the top and the name out of sight) */
@@ -646,6 +888,11 @@ public class MainActivity extends Activity {
             list.post(() -> list.setSelectionFromTop(r, Ui.dp(this, 40)));
         }
         showSelected();
+        if (moved) {
+            Ui.sfx(this, false);
+            info.setAlpha(0f);                  /* the panel's text fades in */
+            info.animate().alpha(1f).setDuration(120).start();
+        }
         if (gridMode) adapter.notifyDataSetChanged();       /* the highlight moves to this cell */
         if (moved || !previewing) startPreview();
     }
@@ -662,6 +909,7 @@ public class MainActivity extends Activity {
     /** Moves the selection to the game at pos, its section's name kept in view. */
     private void goTo(int pos) {
         int row = rowOf(pos);
+        if (row < 0) return;            /* inside a closed group */
         list.setSelectionFromTop(row, headerAbove(row) ? Ui.dp(this, 40) : 0);
         select(pos, row);
     }
@@ -688,7 +936,7 @@ public class MainActivity extends Activity {
 
     /** D-pad left (dir -1) or right (dir 1): up or down a page of rows, onto the nearest game. */
     private void page(int dir) {
-        if (shown < 0 || rows.isEmpty()) return;
+        if (shown < 0 || shownRow < 0 || groupRow >= 0 || rows.isEmpty()) return;
         int n = Math.max(1, list.getLastVisiblePosition() - list.getFirstVisiblePosition());
         int row = Math.max(0, Math.min(rows.size() - 1, shownRow + dir * n));
         int r = row;
@@ -746,13 +994,16 @@ public class MainActivity extends Activity {
             if (Integer.valueOf(game).equals(rows.get(r))) return r;
             if (cellsAt(r) != null && indexIn(cellsAt(r), game) >= 0) return r;
         }
-        return 0;
+        return -1;
     }
 
     private void startPreview() {
         if (shown < 0 || shown >= games.size()) return;
         previewing = true;
-        preview.schedule(games.get(shown), fileName(games.get(shown)));
+        String fn = fileName(games.get(shown));
+        String mode = Options.previewMode(prefs, fn);
+        if ("picture".equals(mode)) { preview.stop(); return; }
+        preview.schedule(games.get(shown), fn, "video".equals(mode));
     }
 
     /** The title in the game's header, or its file name if it has none. */
@@ -801,7 +1052,47 @@ public class MainActivity extends Activity {
         return c;
     }
 
+    /** The cart's picture; with none built in, the game's ES-DE title screenshot (loaded in the background). */
+    private Bitmap pic(Files.Entry e, Cart c) {
+        if (c == null || e == null) return null;
+        if (c.picture != null) return c.picture;
+        String base = Saves.base(fileName(e)), m = prefs.getString("mediaTree", null);
+        if (m == null) return null;
+        Bitmap b = snaps.get(base);
+        if (b == null && snapTried.add(base)) {
+            reader.execute(() -> {
+                Bitmap got = SnapMaker.shot(getContentResolver(), Uri.parse(m), base);
+                if (got == null) return;
+                runOnUiThread(() -> {
+                    if (isFinishing()) return;
+                    snaps.put(base, got);
+                    adapter.notifyDataSetChanged();
+                    if (shown >= 0 && shown < games.size() && fileName(games.get(shown)).equals(fileName(e))) showSelected();
+                });
+            });
+        }
+        return b;
+    }
+
+    /** A group row is selected: the preview shows a plain card with the group's name, not the game before it. */
+    private void groupCard() {
+        previewing = false;
+        preview.stop();
+        showSelected();
+    }
+
     private void showSelected() {
+        if (groupRow >= 0 && isGroup(groupRow)) {
+            Group g = (Group) rows.get(groupRow);
+            Cart gc = g.first >= 0 && g.first < games.size() ? cart(games.get(g.first)) : null;
+            art.set(pic(gc == null ? null : games.get(g.first), gc));
+            artTitle.setText(g.label);
+            artInfo.setText(g.open ? "A closes the group" : "A opens the group");
+            hintRow.setVisibility(View.GONE);
+            artPort.setVisibility(View.GONE);
+            if (artPlayed != null) artPlayed.setVisibility(View.GONE);
+            return;
+        }
         if (shown < 0 || shown >= games.size()) {
             boolean folder = tree() != null;
             art.set(null);
@@ -810,9 +1101,10 @@ public class MainActivity extends Activity {
             artPort.setVisibility(View.GONE);
             return;
         }
+        hintRow.setVisibility(portrait() || getResources().getConfiguration().screenHeightDp < 420 ? View.GONE : View.VISIBLE);
         Files.Entry e = games.get(shown);
         Cart c = cart(e);
-        art.set(c == null ? null : c.picture);
+        art.set(pic(e, c));
         artTitle.setText(displayTitle(e));
         StringBuilder d = new StringBuilder();
         if (c != null) {
@@ -822,8 +1114,10 @@ public class MainActivity extends Activity {
         }
         if (hidden.contains(e.path)) d.append(d.length() > 0 ? " · " : "").append("Hidden");
         long time = Stats.time(this, fileName(e)), last = Stats.last(this, fileName(e));
-        if (last > 0) d.append("\n").append(time > 0 ? "Played " + Stats.duration(time) + " · " : "")
-                .append("last ").append(Stats.when(last));
+        StringBuilder pl = new StringBuilder();
+        if (last > 0) pl.append(time > 0 ? "Played " + Stats.duration(time) + " · " : "").append("last ").append(Stats.when(last));
+        if (portrait()) { artPlayed.setText(pl); artPlayed.setVisibility(pl.length() > 0 ? View.VISIBLE : View.GONE); }
+        else if (pl.length() > 0) d.append("\n").append(pl);
         artInfo.setText(d);
         if (c != null && c.portedFrom != null) {
             artPort.setText(c.portedFrom + " port" + (c.porter != null ? ", ported by " + c.porter : ""));
@@ -835,6 +1129,7 @@ public class MainActivity extends Activity {
 
     private void play(int pos) {
         if (pos < 0 || pos >= games.size()) return;
+        Ui.sfx(this, true);
         Files.Entry e = games.get(pos);
         /* a game that names card files not in the games folder: say so, and let the player start anyway */
         Cart c = carts.get(e.uri);
@@ -984,7 +1279,7 @@ public class MainActivity extends Activity {
         }
         boolean dpad = code == KeyEvent.KEYCODE_DPAD_UP || code == KeyEvent.KEYCODE_DPAD_DOWN
                 || code == KeyEvent.KEYCODE_DPAD_LEFT || code == KeyEvent.KEYCODE_DPAD_RIGHT;
-        if (gridMode && shown >= 0 && dpad) {
+        if (gridMode && (shown >= 0 || groupRow >= 0) && dpad) {
             if (ev.getAction() == KeyEvent.ACTION_DOWN) gridMove(code);
             return true;
         }
@@ -1006,8 +1301,9 @@ public class MainActivity extends Activity {
 
     /** True when UP from the shown game has nowhere further to go in the list. */
     private boolean atTop() {
-        if (shownRow < 0 || list.getVisibility() != View.VISIBLE) return false;
-        for (int r = shownRow - 1; r >= 0; r--) if (gameAt(r) >= 0 || cellsAt(r) != null) return false;
+        int cur = groupRow >= 0 ? groupRow : shownRow;
+        if (cur < 0 || list.getVisibility() != View.VISIBLE) return false;
+        for (int r = cur - 1; r >= 0; r--) if (gameAt(r) >= 0 || cellsAt(r) != null || isGroup(r)) return false;
         return true;
     }
 
@@ -1049,13 +1345,23 @@ public class MainActivity extends Activity {
     /** The grid row before (dir -1) or after (dir 1) row, or -1: section names are skipped. */
     private int gridRowNear(int row, int dir) {
         for (int r = row + dir; r >= 0 && r < rows.size(); r += dir)
-            if (rows.get(r) instanceof int[]) return r;
+            if (rows.get(r) instanceof int[] || rows.get(r) instanceof Group) return r;
         return -1;
     }
 
     /** Left or right a cell (on to the next row's end or start at an edge); up or down a row, same column. */
     private void gridMove(int code) {
-        int r = shownRow;
+        int r = groupRow >= 0 ? groupRow : shownRow;
+        if (isGroup(r)) {                       /* a group row selected: up or down only */
+            if (code == KeyEvent.KEYCODE_DPAD_UP || code == KeyEvent.KEYCODE_DPAD_DOWN) {
+                int n = gridRowNear(r, code == KeyEvent.KEYCODE_DPAD_UP ? -1 : 1);
+                if (n < 0) return;
+                keepVisible(n);
+                if (isGroup(n)) { groupRow = n; adapter.notifyDataSetChanged(); groupCard(); }
+                else select(cellsAt(n)[0], n);
+            }
+            return;
+        }
         int[] ids = cellsAt(r);
         int c = ids == null ? -1 : indexIn(ids, shown);
         if (c < 0) return;
@@ -1071,6 +1377,13 @@ public class MainActivity extends Activity {
         } else {
             r = gridRowNear(r, code == KeyEvent.KEYCODE_DPAD_UP ? -1 : 1);
             if (r < 0) return;
+            if (isGroup(r)) {
+                keepVisible(r);
+                groupRow = r;
+                adapter.notifyDataSetChanged();
+                groupCard();
+                return;
+            }
             ids = cellsAt(r);
             c = Math.min(c, ids.length - 1);
         }
@@ -1085,19 +1398,51 @@ public class MainActivity extends Activity {
         else if (r >= list.getLastVisiblePosition()) list.smoothScrollToPosition(r);
     }
 
+    private boolean aHeld;
+
+    private static boolean isPlayKey(int code) {
+        return code == KeyEvent.KEYCODE_BUTTON_A || code == KeyEvent.KEYCODE_BUTTON_START
+                || code == KeyEvent.KEYCODE_ENTER || code == KeyEvent.KEYCODE_DPAD_CENTER;
+    }
+
+    @Override
+    public boolean onKeyLongPress(int code, KeyEvent ev) {
+        if (isPlayKey(code) && shown >= 0 && groupRow < 0) {
+            aHeld = true;
+            gameSettings(shown, shownRow);
+            return true;
+        }
+        return super.onKeyLongPress(code, ev);
+    }
+
+    @Override
+    public boolean onKeyUp(int code, KeyEvent ev) {
+        if (isPlayKey(code) && groupRow < 0 && shown >= 0) {
+            if (!aHeld && ev.isTracking() && !ev.isCanceled()) play(shown);
+            aHeld = false;
+            return true;
+        }
+        return super.onKeyUp(code, ev);
+    }
+
     @Override
     public boolean onKeyDown(int code, KeyEvent ev) {
         int pos = shown;
         switch (code) {
             case KeyEvent.KEYCODE_BUTTON_A: case KeyEvent.KEYCODE_BUTTON_START: case KeyEvent.KEYCODE_ENTER:
             case KeyEvent.KEYCODE_DPAD_CENTER:
-                if (pos >= 0) { play(pos); return true; }
+                if (groupRow >= 0) { toggleGroup(groupRow); return true; }
+                if (pos >= 0) {
+                    /* a game starts on release; held, it opens the game's settings instead */
+                    if (ev.getRepeatCount() == 0) { ev.startTracking(); aHeld = false; }
+                    return true;
+                }
                 break;
             case KeyEvent.KEYCODE_BUTTON_X:
-                if (pos >= 0) { toggleHidden(pos); return true; }
+                if (pos >= 0 && groupRow < 0) { toggleHidden(pos); return true; }
                 break;
             case KeyEvent.KEYCODE_BUTTON_Y:
-                if (pos >= 0) { toggleFavourite(pos); return true; }
+                if (pos >= 0 && groupRow < 0) { toggleFavourite(pos); return true; }
                 break;
             case KeyEvent.KEYCODE_BUTTON_L1:
                 toggleMute();
@@ -1117,7 +1462,11 @@ public class MainActivity extends Activity {
             case KeyEvent.KEYCODE_BUTTON_THUMBR: case KeyEvent.KEYCODE_SEARCH:
                 search();
                 return true;
-            case KeyEvent.KEYCODE_BUTTON_SELECT: case KeyEvent.KEYCODE_MENU: case KeyEvent.KEYCODE_BUTTON_MODE:
+            case KeyEvent.KEYCODE_BUTTON_SELECT:
+                if (pos >= 0 && groupRow < 0) { gameSettings(pos, shownRow); return true; }
+                openOptions();
+                return true;
+            case KeyEvent.KEYCODE_MENU: case KeyEvent.KEYCODE_BUTTON_MODE:
                 openOptions();
                 return true;
         }
@@ -1146,7 +1495,7 @@ public class MainActivity extends Activity {
             Cart c = cart(e);
             ArtView pic = new ArtView(this, 12);
             pic.fill = true;
-            pic.set(c == null ? null : c.picture);
+            pic.set(pic(e, c));
             int side = Math.max(1, cell - gap - 2 * pad);   /* the card's inside width */
             card.addView(pic, new LinearLayout.LayoutParams(side, side));
             TextView title = Ui.text(this, (favs.contains(e.path) ? "★ " : "") + displayTitle(e), 13,
@@ -1171,8 +1520,8 @@ public class MainActivity extends Activity {
         @Override public int getCount() { return rows.size(); }
         @Override public Object getItem(int row) { return rows.get(row); }
         @Override public long getItemId(int row) { return row; }
-        @Override public int getViewTypeCount() { return 3; }
-        @Override public int getItemViewType(int row) { return isHeader(row) ? 1 : cellsAt(row) != null ? 2 : 0; }
+        @Override public int getViewTypeCount() { return 4; }
+        @Override public int getItemViewType(int row) { return isHeader(row) ? 1 : cellsAt(row) != null ? 2 : isGroup(row) ? 3 : 0; }
         @Override public boolean areAllItemsEnabled() { return false; }
         @Override public boolean isEnabled(int row) { return !isHeader(row); }
 
@@ -1180,18 +1529,30 @@ public class MainActivity extends Activity {
         public View getView(int row, View convert, ViewGroup parent) {
             if (cellsAt(row) != null) return gridRow(row, cellsAt(row));
             int pos = gameAt(row);
+            if (isGroup(row)) {
+                GroupRow gr = new GroupRow(MainActivity.this, (Group) rows.get(row), depths.get(row));
+                gr.setActivated(row == groupRow);
+                gr.setLayoutParams(new AbsListView.LayoutParams(AbsListView.LayoutParams.MATCH_PARENT,
+                        AbsListView.LayoutParams.WRAP_CONTENT));
+                return gr;
+            }
             if (pos < 0) {
                 /* a section's name: a fresh view every time, never one recycled from a game's row
                    (a recycled one could come back empty after scrolling) */
-                Header h = new Header(MainActivity.this, (String) rows.get(row), row == 0);
+                String hn = (String) rows.get(row);
+                Integer hc = sectionCounts.get(hn);
+                Header h = new Header(MainActivity.this, hc == null ? hn : hn + " · " + hc, row == 0);
                 h.setLayoutParams(new AbsListView.LayoutParams(AbsListView.LayoutParams.MATCH_PARENT,
                         AbsListView.LayoutParams.WRAP_CONTENT, 1));
                 return h;
             }
             Row r = convert instanceof Row ? (Row) convert : new Row(MainActivity.this);
             Files.Entry e = games.get(pos);
+            int ind = depths.get(row);
+            r.setPadding(Ui.dp(MainActivity.this, 8 + 20 * ind), Ui.dp(MainActivity.this, 8),
+                    Ui.dp(MainActivity.this, 16), Ui.dp(MainActivity.this, 8));
             Cart c = cart(e);
-            r.thumb.set(c == null ? null : c.picture);
+            r.thumb.set(pic(e, c));
             r.title.setText(displayTitle(e));
             String d = details(e);
             r.sub.setText(d);
@@ -1203,15 +1564,50 @@ public class MainActivity extends Activity {
     }
 
     /** A section's name in the list: ★ Favourites, Last played, CHGame originals, Ports. */
-    private static final class Header extends TextView {
+    private static final class Header extends LinearLayout {
         Header(Context c, String name, boolean first) {
             super(c);
-            setText(name);
-            setTextSize(14);
-            setTextColor(Ui.PRIMARY);
-            setTypeface(Ui.MEDIUM);
-            setSingleLine(true);
-            setPadding(Ui.dp(c, 12), Ui.dp(c, first ? 2 : 14), 0, Ui.dp(c, 2));
+            setOrientation(VERTICAL);
+            if (!first) {                       /* a hairline above every header but the first */
+                View line = new View(c);
+                line.setBackgroundColor(Ui.OUTLINE_VARIANT);
+                LayoutParams lp = new LayoutParams(LayoutParams.MATCH_PARENT, Ui.dp(c, 1));
+                lp.setMargins(Ui.dp(c, 12), Ui.dp(c, 8), Ui.dp(c, 12), 0);
+                addView(line, lp);
+            }
+            TextView t = new TextView(c);
+            t.setText(name);
+            t.setTextSize(14);
+            t.setTextColor(Ui.PRIMARY);
+            t.setTypeface(Ui.MEDIUM);
+            t.setSingleLine(true);
+            t.setPadding(Ui.dp(c, 12), Ui.dp(c, first ? 2 : 8), 0, Ui.dp(c, 2));
+            addView(t);
+        }
+    }
+
+    /** A group's row: a triangle and its name; tinted while the pad is on it. */
+    private static final class GroupRow extends LinearLayout {
+        GroupRow(Context c, Group g, int depth) {
+            super(c);
+            setOrientation(HORIZONTAL);
+            setGravity(Gravity.CENTER_VERTICAL);
+            setPadding(Ui.dp(c, 16 + 20 * depth), Ui.dp(c, 12), Ui.dp(c, 16), Ui.dp(c, 12));
+            setBackground(Ui.card(c, Ui.SURFACE, 16));
+            ColorStateList strong = new ColorStateList(
+                    new int[][] { { android.R.attr.state_activated }, { android.R.attr.state_selected }, {} },
+                    new int[] { Ui.ON_PRIMARY_CONTAINER, Ui.ON_PRIMARY_CONTAINER, Ui.PRIMARY });
+            TextView arrow = Ui.text(c, g.open ? "\u25BE" : "\u25B8", 18, Ui.PRIMARY, Ui.MEDIUM);
+            arrow.setTextColor(strong);
+            arrow.setDuplicateParentStateEnabled(true);
+            addView(arrow);
+            TextView t = Ui.text(c, g.label, 17, Ui.PRIMARY, Ui.MEDIUM);
+            t.setTextColor(strong);
+            t.setSingleLine(true);
+            t.setEllipsize(TextUtils.TruncateAt.END);
+            t.setPadding(Ui.dp(c, 12), 0, 0, 0);
+            t.setDuplicateParentStateEnabled(true);
+            addView(t, new LayoutParams(0, LayoutParams.WRAP_CONTENT, 1));
         }
     }
 
@@ -1255,8 +1651,10 @@ public class MainActivity extends Activity {
     /** A 128x128 picture with sharp pixels and rounded corners: the largest whole-number scale
      *  that fits, or with fill as big as fits. */
     static final class ArtView extends View {
-        boolean fill;
-        private Bitmap bmp;
+        boolean fill, fade;
+        private Bitmap bmp, old;
+        private float t = 1f;
+        private android.animation.ValueAnimator anim;
         private final Paint paint = new Paint();
         private final Rect src = new Rect(0, 0, 128, 128), dst = new Rect();
         private final float radius;
@@ -1276,6 +1674,25 @@ public class MainActivity extends Activity {
 
         void set(Bitmap b) {
             if (b == bmp) return;
+            if (fade && bmp != null && b != null && isShown()) {      /* a new selection: cross-fade, 120 ms */
+                old = bmp;
+                t = 0f;
+                if (anim != null) anim.cancel();
+                anim = android.animation.ValueAnimator.ofFloat(0f, 1f).setDuration(120);
+                anim.addUpdateListener(a -> {
+                    t = (Float) a.getAnimatedValue();
+                    if (t >= 1f) old = null;
+                    invalidate();
+                });
+                anim.start();
+            }
+            bmp = b;
+            invalidate();
+        }
+
+        /** A preview frame: replaces the picture at once, with no fade. */
+        void setNow(Bitmap b) {
+            if (t < 1f && old != null) { if (anim != null) anim.cancel(); old = null; t = 1f; }
             bmp = b;
             invalidate();
         }
@@ -1293,7 +1710,14 @@ public class MainActivity extends Activity {
         @Override
         protected void onDraw(Canvas c) {
             if (bmp != null) {
+                if (old != null) {
+                    paint.setAlpha(255);
+                    c.drawBitmap(old, src, dst, paint);
+                }
+                paint.setAlpha(old != null ? (int) (255 * t) : 255);
+                src.set(0, 0, bmp.getWidth(), bmp.getHeight());
                 c.drawBitmap(bmp, src, dst, paint);
+                paint.setAlpha(255);
             } else {
                 paint.setColor(Ui.SURFACE_HIGH);
                 c.drawRect(dst, paint);

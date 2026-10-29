@@ -78,10 +78,26 @@ public class OptionsActivity extends Page {
             prefs.edit().putBoolean("gridList", !Options.gridList(prefs)).apply();
             build();
         });
+        row("Group by developer", Options.groupByDeveloper(prefs)
+                ? "On: one group for each developer, opened with A" : "Off: only the board and card games are grouped", () -> {
+            prefs.edit().putBoolean("groupByDeveloper", !Options.groupByDeveloper(prefs)).apply();
+            build();
+        });
+        row("Board and card games", Options.boardCards(prefs) ? "Show" : "Hide: left out of the list (Get games still lists them)", () -> {
+            prefs.edit().putBoolean("boardCards", !Options.boardCards(prefs)).apply();
+            build();
+        });
         row("Live preview", Options.PREVIEW_NAMES[indexOf(Options.PREVIEWS, Options.preview(prefs))]
                         + ". The selected game runs in the picture's place after a moment",
                 () -> pick("Live preview", Options.PREVIEW_NAMES, indexOf(Options.PREVIEWS, Options.preview(prefs)),
                         i -> prefs.edit().putString("preview", Options.PREVIEWS[i]).apply()));
+        row("List preview", Options.PREVIEW_MODE_NAMES[indexOf(Options.PREVIEW_MODES, Options.previewMode(prefs))],
+                () -> pick("List preview", Options.PREVIEW_MODE_NAMES, indexOf(Options.PREVIEW_MODES, Options.previewMode(prefs)),
+                        i -> prefs.edit().putString("previewMode", Options.PREVIEW_MODES[i]).apply()));
+        row("Menu sounds", Options.menuSounds(prefs) ? "On: a soft click as the highlight moves, a blip on A" : "Off", () -> {
+            prefs.edit().putBoolean("menuSounds", !Options.menuSounds(prefs)).apply();
+            build();
+        });
         row("Sort games", Options.SORT_NAMES[indexOf(Options.SORTS, Options.sort(prefs))],
                 () -> pick("Sort games", Options.SORT_NAMES, indexOf(Options.SORTS, Options.sort(prefs)),
                         i -> prefs.edit().putString("sort", Options.SORTS[i]).apply()));
@@ -130,6 +146,9 @@ public class OptionsActivity extends Page {
         row("Touch controls", Options.TOUCH_NAMES[indexOf(Options.TOUCHES, Options.touch(prefs))]
                 + ". Edit layout, opacity, vibrate",
                 () -> startActivity(new Intent(this, TouchSettingsActivity.class)));
+        row("Quit combo", Options.quitOff(prefs) ? "Off" : Keymap.name(Options.quitKey1(prefs)) + " + "
+                + Keymap.name(Options.quitKey2(prefs)) + (Options.quitHold(prefs) ? ", held for 2 s" : ""),
+                this::quitCombo);
 
         section("ES-DE");
         row("ES-DE media folder", mediaName(), this::pickMedia);
@@ -162,6 +181,50 @@ public class OptionsActivity extends Page {
                 .setSingleChoiceItems(items, current, (d, i) -> { d.dismiss(); cb.run(i); build(); })
                 .setNegativeButton("Cancel", null)
                 .show();
+    }
+
+    /** The quit combo: its two keys (each set by pressing it on the pad), the 2 s hold, and Off. */
+    private void quitCombo() {
+        SharedPreferences prefs = getSharedPreferences(MainActivity.PREFS, MODE_PRIVATE);
+        String[] items = {
+                "First key: " + Keymap.name(Options.quitKey1(prefs)),
+                "Second key: " + Keymap.name(Options.quitKey2(prefs)),
+                "Hold for 2 s: " + (Options.quitHold(prefs) ? "on" : "off"),
+                Options.quitOff(prefs) ? "Turn the combo on" : "Turn the combo off" };
+        new AlertDialog.Builder(this, Ui.dialogTheme()).setTitle("Quit combo")
+                .setItems(items, (d, i) -> {
+                    if (i < 2) {
+                        captureKey(i == 0);
+                        return;
+                    }
+                    if (i == 2) prefs.edit().putBoolean("quitHold", !Options.quitHold(prefs)).apply();
+                    else prefs.edit().putBoolean("quitOff", !Options.quitOff(prefs)).apply();
+                    build();
+                })
+                .setNegativeButton("Close", null).show();
+    }
+
+    /** Waits for the next key on the pad: it becomes the first or the second quit key. BACK and the other key are refused. */
+    private void captureKey(boolean first) {
+        SharedPreferences prefs = getSharedPreferences(MainActivity.PREFS, MODE_PRIVATE);
+        int other = first ? Options.quitKey2(prefs) : Options.quitKey1(prefs);
+        AlertDialog d = new AlertDialog.Builder(this, Ui.dialogTheme())
+                .setTitle("Press the " + (first ? "first" : "second") + " key on the pad")
+                .setMessage("The two keys must differ. BACK always opens the menu.")
+                .setNegativeButton("Cancel", null).create();
+        d.setOnKeyListener((dd, code, ev) -> {
+            if (ev.getAction() != KeyEvent.ACTION_DOWN) return true;
+            if (code == KeyEvent.KEYCODE_BACK || code == other) {
+                android.widget.Toast.makeText(this, code == KeyEvent.KEYCODE_BACK ? "BACK cannot be a quit key"
+                        : "That key is already the other quit key", android.widget.Toast.LENGTH_SHORT).show();
+                return true;
+            }
+            prefs.edit().putInt(first ? "quitKey1" : "quitKey2", code).apply();
+            dd.dismiss();
+            build();
+            return true;
+        });
+        d.show();
     }
 
     private static int indexOf(String[] a, String v) {

@@ -26,7 +26,7 @@ import java.util.concurrent.Executors;
 final class Preview {
     static final Object CORE = new Object();
     static volatile boolean gameRunning;
-    private static final long DELAY_MS = 1000;
+    private static final long DELAY_MS = 150;
 
     interface Screen { void frame(Bitmap b); }
 
@@ -44,13 +44,13 @@ final class Preview {
     }
 
     /** Previews this game once the selection has rested; any running preview stops now. */
-    void schedule(Files.Entry e, String fileName) {
+    void schedule(Files.Entry e, String fileName, boolean video) {
         stop();
         SharedPreferences p = a.getSharedPreferences(MainActivity.PREFS, Activity.MODE_PRIVATE);
         if ("off".equals(Options.preview(p))) return;
         final int s = session;
         soundOn = "sound".equals(Options.preview(p));
-        pending = () -> runner.execute(() -> run(e, fileName, s));
+        pending = () -> runner.execute(() -> { if (!(video && playVideo(fileName, s))) run(e, fileName, s); });
         ui.postDelayed(pending, DELAY_MS);
     }
 
@@ -69,6 +69,72 @@ final class Preview {
     void shutdown() {
         stop();
         runner.shutdown();
+    }
+
+    /** Plays the game's ES-DE clip (looping, with its sound unless muted) in the preview's place;
+     *  false when there is none (the caller falls back to the live preview). Runs until the selection moves. */
+    private boolean playVideo(String fileName, int s) {
+        if (s != session || gameRunning) return true;
+        File clip = new File(a.getCacheDir(), "previewclip.mp4");
+        try {
+            String m = a.getSharedPreferences(MainActivity.PREFS, Activity.MODE_PRIVATE).getString("mediaTree", null);
+            if (m == null) return false;
+            android.net.Uri tree = android.net.Uri.parse(m);
+            android.content.ContentResolver cr = a.getContentResolver();
+            String root = android.provider.DocumentsContract.getTreeDocumentId(tree);
+            String d = SnapMaker.child(cr, tree, root, "chgame");
+            d = d == null ? null : SnapMaker.child(cr, tree, d, "videos");
+            String id = d == null ? null : SnapMaker.child(cr, tree, d, Saves.base(fileName) + ".mp4");
+            if (id == null) return false;
+            try (java.io.InputStream in = cr.openInputStream(android.provider.DocumentsContract.buildDocumentUriUsingTree(tree, id));
+                 java.io.OutputStream out = new java.io.FileOutputStream(clip)) {
+                if (in == null) return false;
+                byte[] b = new byte[1 << 16];
+                for (int n; (n = in.read(b)) > 0; ) out.write(b, 0, n);
+            }
+        } catch (Exception ex) {
+            return false;
+        }
+        if (s != session) return true;
+        android.media.MediaMetadataRetriever r = new android.media.MediaMetadataRetriever();
+        android.media.MediaPlayer mp = new android.media.MediaPlayer();
+        try {
+            r.setDataSource(clip.getPath());
+            String ds = r.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION);
+            long durMs = ds == null ? 0 : Long.parseLong(ds);
+            if (durMs <= 0) return false;
+            mp.setAudioAttributes(new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_GAME)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build());
+            mp.setDataSource(clip.getPath());
+            mp.setLooping(true);
+            mp.prepare();
+            boolean sound = soundOn;
+            mp.setVolume(sound ? 0.7f : 0f, sound ? 0.7f : 0f);
+            mp.start();
+            Bitmap last = null;
+            while (s == session && !gameRunning) {
+                if (sound != soundOn) {
+                    sound = soundOn;
+                    mp.setVolume(sound ? 0.7f : 0f, sound ? 0.7f : 0f);
+                }
+                long pos = Math.min(mp.getCurrentPosition(), durMs - 1);
+                Bitmap f = r.getFrameAtTime(pos * 1000, android.media.MediaMetadataRetriever.OPTION_CLOSEST);
+                if (f != null && f != last) {
+                    last = f;
+                    final Bitmap fb = f;
+                    ui.post(() -> { if (s == session) screen.frame(fb); });
+                }
+                try { Thread.sleep(15); } catch (InterruptedException ie) { break; }
+            }
+            return true;
+        } catch (Exception ex) {
+            return false;
+        } finally {
+            try { mp.stop(); } catch (Exception ignored) { }
+            mp.release();
+            try { r.release(); } catch (Exception ignored) { }
+            clip.delete();
+        }
     }
 
     private void run(Files.Entry e, String fileName, int s) {
@@ -92,6 +158,35 @@ final class Preview {
             if (!Native.start(game.getPath(), new File(a.getFilesDir(), "sys").getPath(), saves.getPath(),
                     new File(a.getCacheDir(), "preview.log").getPath()))
                 return;
+            /* run unseen and silent, flat out, until the screen is ready and the card has been
+               idle for 2 s of emulated time (30 s cap): a game that streams from the SD card
+               shows its loading screen first (as SnapMaker does) */
+            {
+                int[] wpx = new int[128 * 128];
+                short[] wbuf = new short[4096 * 2];
+                int f = 0, quiet = 0;
+                long reads = -1;
+                boolean scr = false;
+                while (f < 50 * 60 && s == session && !gameRunning) {
+                    Native.frame(0, wpx, wbuf);
+                    f++;
+                    if (!scr) {
+                        if (!(scr = Native.screenReady())) continue;
+                        reads = Native.sdReads();
+                        if (reads <= 0) break;
+                        f = 0;
+                        continue;
+                    }
+                    long r = Native.sdReads();
+                    quiet = r == reads ? quiet + 1 : 0;
+                    reads = r;
+                    if (quiet >= 2 * 60 || f >= 30 * 60) break;
+                }
+                if (s != session || gameRunning) {
+                    Native.stop();
+                    return;
+                }
+            }
             int min = AudioTrack.getMinBufferSize(48000, AudioFormat.CHANNEL_OUT_STEREO, AudioFormat.ENCODING_PCM_16BIT);
             AudioTrack track = new AudioTrack.Builder()
                     .setAudioAttributes(new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_GAME)

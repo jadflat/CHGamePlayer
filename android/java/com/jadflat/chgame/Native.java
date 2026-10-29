@@ -17,6 +17,8 @@ final class Native {
     static native void flush();
     /** The game has the screen on and has drawn a whole frame; until then it is blank white. */
     static native boolean screenReady();
+    /** SD blocks the game has read so far; a count that stops rising means loading is done. */
+    static native long sdReads();
     static native boolean saveState(String path);
     static native boolean loadState(String path);
     static native void stop();

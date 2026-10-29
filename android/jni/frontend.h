@@ -23,6 +23,8 @@ int  fe_frame(uint16_t buttons, uint32_t *argb, int16_t *stereo, int max_frames)
 void fe_flush(void);
 /* the game has the screen on and has drawn a whole frame (before that it is white) */
 bool fe_screen_ready(void);
+/* SD blocks read so far */
+unsigned long long fe_sd_reads(void);
 bool fe_save_state(const char *path);
 bool fe_load_state(const char *path);
 void fe_stop(void);

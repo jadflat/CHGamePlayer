@@ -45,6 +45,26 @@ final class Cart {
         return fullAuthor != null && !fullAuthor.isEmpty() ? fullAuthor : author;
     }
 
+    /** {title, author, version} from a 512-byte header; null if this is not a CHG file. */
+    static String[] ident(byte[] head, int n) {
+        if (n < HEADER || head[0] != 'C' || head[1] != 'H' || head[2] != 'G' || head[3] != '1') return null;
+        return new String[] { text(head, 0x20, 32), text(head, 0x40, 16), text(head, 0x50, 16) };
+    }
+
+    static String[] ident(ContentResolver cr, Uri uri) {
+        byte[] head = new byte[HEADER];
+        try (InputStream in = cr.openInputStream(uri)) {
+            return in == null ? null : ident(head, readFully(in, head));
+        } catch (IOException | RuntimeException e) {
+            return null;
+        }
+    }
+
+    /** The same game whatever the file is called: title and author, lower case. */
+    static String key(String[] id) {
+        return (id[0] + "\n" + id[1]).toLowerCase(java.util.Locale.ROOT);
+    }
+
     /** Just the title in the 512-byte header; null if there is none or this is not a CHG file. */
     static String title(ContentResolver cr, Uri uri) {
         byte[] head = new byte[HEADER];

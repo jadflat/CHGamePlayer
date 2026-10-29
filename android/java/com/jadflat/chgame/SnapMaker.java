@@ -3,6 +3,7 @@ package com.jadflat.chgame;
 import android.content.ContentResolver;
 import android.content.Context;
 import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.media.Image;
 import android.media.MediaCodec;
 import android.media.MediaCodecInfo;
@@ -118,6 +119,17 @@ final class SnapMaker {
             Native.frame(0, px, sound);
         }
         if (!Native.screenReady()) return null;
+        /* a game that streams from the card shows its loading screen first: wait until
+           no block has been read for 2 s of emulated time (at most 30 s) */
+        long reads = Native.sdReads();
+        int quiet = 0;
+        for (int f = 0; f < 30 * 60 && quiet < 2 * 60 && reads > 0; f++) {
+            if (cancel.cancelled()) return null;
+            Native.frame(0, px, sound);
+            long r = Native.sdReads();
+            quiet = r == reads ? quiet + 1 : 0;
+            reads = r;
+        }
 
         MediaFormat vf = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, SIZE, SIZE);
         vf.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible);
@@ -334,6 +346,23 @@ final class SnapMaker {
                 if (name.equals(c.getString(1))) return c.getString(0);
         }
         return null;
+    }
+
+    /** The game's screenshot from chgame/screenshots, scaled to 128x128 (nearest neighbour); null if there is none. */
+    static Bitmap shot(ContentResolver cr, Uri tree, String base) {
+        try {
+            String chgame = child(cr, tree, DocumentsContract.getTreeDocumentId(tree), "chgame");
+            String d = chgame == null ? null : child(cr, tree, chgame, "screenshots");
+            String id = d == null ? null : child(cr, tree, d, base + ".png");
+            if (id == null) return null;
+            Bitmap big;
+            try (InputStream in = cr.openInputStream(DocumentsContract.buildDocumentUriUsingTree(tree, id))) {
+                big = BitmapFactory.decodeStream(in);
+            }
+            return big == null ? null : Bitmap.createScaledBitmap(big, 128, 128, false);
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     /** The file names in the media folder's chgame/<sub> (empty if it isn't there yet). */

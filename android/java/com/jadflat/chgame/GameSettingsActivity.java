@@ -23,6 +23,12 @@ public class GameSettingsActivity extends Page {
         if (file == null) { finish(); return; }
         if (title == null) title = Saves.base(file);
         build();
+        new Thread(() -> {
+            android.net.Uri m = uriPref("mediaTree", true);
+            if (m == null) return;
+            boolean has = SnapMaker.names(getContentResolver(), m, "videos").contains(Saves.base(file) + ".mp4");
+            runOnUiThread(() -> { if (has != hasClip) { hasClip = has; if (!making && !isFinishing()) build(); } });
+        }).start();
     }
 
     @Override
@@ -51,10 +57,85 @@ public class GameSettingsActivity extends Page {
                 Options.setGame(prefs, file, "volume", null);
                 build();
             });
+        section("Screen");
+        String rotate = prefs.getString("rotate:" + file, "auto");
+        String[] rotKeys = { "auto", "portrait", "landscape" };
+        String[] rotNames = { "Follow the device", "Always upright", "Always sideways" };
+        row("Screen rotation", rotNames[indexOf(rotKeys, rotate)], () ->
+                pick("Screen rotation for " + title, rotNames, indexOf(rotKeys, rotate),
+                        i -> prefs.edit().putString("rotate:" + file, rotKeys[i]).apply()));
+        String pv = prefs.getString("preview:" + file, "default");
+        String[] pvKeys = { "default", "live", "video", "picture" };
+        String[] pvNames = { "Default (Options)", "Live", "Video", "Picture" };
+        row("Preview", pvNames[indexOf(pvKeys, pv)], () ->
+                pick("Preview for " + title, pvNames, indexOf(pvKeys, pv), i -> {
+                    if (i == 0) prefs.edit().remove("preview:" + file).apply();
+                    else prefs.edit().putString("preview:" + file, pvKeys[i]).apply();
+                }));
         section("Buttons");
         row("Buttons", prefs.contains("keymap:" + file) ? "Own mapping" : "The main mapping", () ->
                 startActivity(new Intent(this, MapButtonsActivity.class).putExtra("file", file).putExtra("title", title)));
+        section("ES-DE media");
+        row(hasClip ? "Remake preview clip" : "Make preview clip", clipStatus != null ? clipStatus
+                : "Records a 15 s video, screenshot and cover for this game", this::makeClip);
         focus();
+    }
+
+    private volatile boolean making;
+    private String clipStatus;
+    private boolean hasClip;
+
+    private android.net.Uri uriPref(String key, boolean write) {
+        String s = prefs.getString(key, null);
+        if (s == null) return null;
+        android.net.Uri u = android.net.Uri.parse(s);
+        for (android.content.UriPermission p : getContentResolver().getPersistedUriPermissions())
+            if (p.getUri().equals(u) && (write ? p.isWritePermission() : p.isReadPermission())) return u;
+        return null;
+    }
+
+    /** Makes this one game's ES-DE clip, screenshot and cover with SnapMaker, on a thread. */
+    private void makeClip() {
+        if (making) return;
+        android.net.Uri t = uriPref("tree", false), m = uriPref("mediaTree", true);
+        if (t == null || m == null) {
+            android.widget.Toast.makeText(this, "Choose the games folder and the ES-DE media folder in Options first",
+                    android.widget.Toast.LENGTH_LONG).show();
+            return;
+        }
+        making = true;
+        clipStatus = "Making the clip, about a minute...";
+        android.widget.Toast.makeText(this, clipStatus, android.widget.Toast.LENGTH_LONG).show();
+        build();
+        getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        new Thread(() -> {
+            String err;
+            Preview.gameRunning = true;
+            try {
+                Files.Entry found = null;
+                for (Files.Entry e : Files.list(getContentResolver(), t))
+                    if (Files.isGame(e.path) && e.path.substring(e.path.lastIndexOf('/') + 1).equals(file)) { found = e; break; }
+                if (found == null) err = "game not found";
+                else {
+                    Cart cart = Cart.read(getContentResolver(), found.uri);
+                    synchronized (Preview.CORE) {
+                        err = SnapMaker.make(this, m, found, file, cart, () -> false);
+                    }
+                }
+            } finally {
+                Preview.gameRunning = false;
+            }
+            final String e2 = err;
+            runOnUiThread(() -> {
+                making = false;
+                getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                clipStatus = e2 == null ? "Done. Restart ES-DE to see it." : "Failed: " + e2;
+                if (e2 == null) hasClip = true;
+                android.widget.Toast.makeText(this, e2 == null ? "Preview clip done" : clipStatus,
+                        android.widget.Toast.LENGTH_LONG).show();
+                if (!isFinishing()) build();
+            });
+        }, "snap1").start();
     }
 
     @Override

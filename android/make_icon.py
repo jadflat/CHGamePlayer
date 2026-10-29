@@ -7,16 +7,32 @@ here = os.path.dirname(os.path.abspath(__file__))
 BG, SCREEN, ARROW = (0x11, 0x13, 0x18), (0x27, 0x2A, 0x2F), (0xFF, 0xD2, 0x5A)
 SS = 4    # drawn this many times larger, then scaled down: smooth edges
 
-for name, size in [("mdpi", 48), ("hdpi", 72), ("xhdpi", 96), ("xxhdpi", 144), ("xxxhdpi", 192)]:
-    n = size * SS
-    im = Image.new("RGBA", (n, n), (0, 0, 0, 0))
-    g = ImageDraw.Draw(im)
-    g.rounded_rectangle((0, 0, n - 1, n - 1), radius=n // 5, fill=BG)
+def arrow_icon(g, n):
     m = n * 0.2
     g.rounded_rectangle((m, m, n - m, n - m), radius=n // 16, fill=SCREEN)
     c, r = n / 2, n * 0.17
     g.polygon([(c - r * 0.7, c - r), (c - r * 0.7, c + r), (c + r, c)], fill=ARROW)
+
+
+# density: (legacy icon px, adaptive 108 dp px); the adaptive foreground is the arrow screen
+# in the inner 66/108 safe zone, transparent around, and the background is plain BG
+for name, size, adaptive in [("mdpi", 48, 108), ("hdpi", 72, 162), ("xhdpi", 96, 216),
+                             ("xxhdpi", 144, 324), ("xxxhdpi", 192, 432)]:
+    n = size * SS
+    im = Image.new("RGBA", (n, n), (0, 0, 0, 0))
+    g = ImageDraw.Draw(im)
+    g.rounded_rectangle((0, 0, n - 1, n - 1), radius=n // 5, fill=BG)
+    arrow_icon(g, n)
     d = os.path.join(here, "res", "mipmap-" + name)
     os.makedirs(d, exist_ok=True)
     im.resize((size, size), Image.LANCZOS).save(os.path.join(d, "ic_launcher.png"))
+    a = adaptive * SS
+    fg = Image.new("RGBA", (a, a), (0, 0, 0, 0))
+    inner = Image.new("RGBA", (a, a), (0, 0, 0, 0))
+    arrow_icon(ImageDraw.Draw(inner), a)
+    # the screen is shrunk to the 66/108 safe zone
+    k = 66 / 108
+    fg.paste(inner.resize((int(a * k), int(a * k)), Image.LANCZOS), (int(a * (1 - k) / 2),) * 2)
+    fg.resize((adaptive, adaptive), Image.LANCZOS).save(os.path.join(d, "ic_launcher_foreground.png"))
+    Image.new("RGBA", (adaptive, adaptive), BG + (255,)).save(os.path.join(d, "ic_launcher_background.png"))
 print("ok")

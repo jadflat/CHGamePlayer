@@ -72,6 +72,11 @@ JNIEXPORT jboolean JNICALL Java_com_jadflat_chgame_Native_screenReady(JNIEnv *en
     return fe_screen_ready() ? JNI_TRUE : JNI_FALSE;
 }
 
+JNIEXPORT jlong JNICALL Java_com_jadflat_chgame_Native_sdReads(JNIEnv *env, jclass cls)
+{
+    return (jlong)fe_sd_reads();
+}
+
 JNIEXPORT void JNICALL Java_com_jadflat_chgame_Native_flush(JNIEnv *env, jclass cls)
 {
     fe_flush();

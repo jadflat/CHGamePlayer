@@ -205,6 +205,7 @@ typedef struct {
     char   **files;
     int      nfiles, cap;
     bool     full;
+    const SdLayout *hint;   /* where a save state had things */
 } Build;
 
 static uint32_t *fat(Build *b) { return (uint32_t *)(b->mem + b->g.fat_lba * SECTOR); }
@@ -219,6 +220,33 @@ static uint32_t alloc_chain(Build *b, uint32_t n)
     for (uint32_t i = 0; i < n; i++) t[first + i] = i + 1 < n ? first + i + 1 : EOC;
     b->next += n;
     return first;
+}
+
+/* n clusters starting at 'first' if they are all free; 0 if not */
+static uint32_t alloc_at(Build *b, uint32_t first, uint32_t n)
+{
+    if (!n || first < 2 || first + n > b->g.nclus + 2) return 0;
+    uint32_t *t = fat(b);
+    for (uint32_t i = 0; i < n; i++)
+        if (t[first + i]) return 0;
+    for (uint32_t i = 0; i < n; i++) t[first + i] = i + 1 < n ? first + i + 1 : EOC;
+    return first;
+}
+
+static const SdLayoutEntry *hint_find(const Build *b, const char *rel)
+{
+    if (b->hint)
+        for (uint32_t i = 0; i < b->hint->n; i++)
+            if (!strcmp(b->hint->e[i].path, rel)) return &b->hint->e[i];
+    return NULL;
+}
+
+/* a chain for 'rel' where the hint had it, else the next free run */
+static uint32_t alloc_hinted(Build *b, const char *rel, uint32_t n)
+{
+    const SdLayoutEntry *h = hint_find(b, rel);
+    uint32_t c = h ? alloc_at(b, h->start, n) : 0;
+    return c ? c : alloc_chain(b, n);
 }
 
 typedef struct {
@@ -356,8 +384,14 @@ static uint32_t import_dir(Build *b, const char *path, const char *rel, uint32_t
         /* the root's chain starts at 2, before anything else is allocated */
         b->next = 2;
         self = alloc_chain(b, nclus);
+        /* new things go after everything the hint places */
+        if (b->hint)
+            for (uint32_t i = 0; i < b->hint->n; i++) {
+                const uint32_t end = b->hint->e[i].start + b->hint->e[i].nclus;
+                if (end > b->next && end <= b->g.nclus + 2) b->next = end;
+            }
     } else {
-        self = alloc_chain(b, nclus);
+        self = alloc_hinted(b, rel, nclus);
     }
     if (!self) { free(list); return 0; }
     uint8_t *dir = b->mem + clus_off(&b->g, self);
@@ -393,7 +427,7 @@ static uint32_t import_dir(Build *b, const char *path, const char *rel, uint32_t
             if (!clus) continue;
         } else {
             if (x->size > 0xFFFFFFFFu) continue;
-            clus = alloc_chain(b, (uint32_t)((x->size + cbytes - 1) / cbytes));
+            clus = alloc_hinted(b, rpath, (uint32_t)((x->size + cbytes - 1) / cbytes));
             if (x->size && !clus) continue;
             if (x->size) {
                 FILE *f = fopen(hpath, "rb");
@@ -432,9 +466,10 @@ static uint32_t import_dir(Build *b, const char *path, const char *rel, uint32_t
 }
 
 static uint8_t *build_from_folder(const char *folder, uint64_t size, char ***files, int *nfiles, char *err,
-                                  size_t errlen)
+                                  size_t errlen, const SdLayout *hint)
 {
     Build b = { 0 };
+    b.hint = hint;
     if (!geometry(size, &b.g)) { snprintf(err, errlen, "card size out of range"); return NULL; }
     b.mem = calloc(1, (size_t)size);
     if (!b.mem) { snprintf(err, errlen, "out of memory for a %u MB card", (unsigned)(size >> 20)); return NULL; }
@@ -495,6 +530,7 @@ typedef struct {
     Geo            g;
     char         **seen;
     int            nseen, cap;
+    SdLayout      *lay;         /* record where things are, writing nothing */
 } Walk;
 
 static uint32_t next_clus(const Walk *w, uint32_t c)
@@ -583,6 +619,20 @@ static void export_dir(Walk *w, uint32_t clus, const char *host, const char *rel
             snprintf(hpath, sizeof hpath, "%s/%s", host, name);
             snprintf(rpath, sizeof rpath, "%s%s%s", rel, *rel ? "/" : "", name);
             const uint32_t first = (uint32_t)get16(e + 20) << 16 | get16(e + 26);
+            if (w->lay) {
+                SdLayout *l = w->lay;
+                if (l->n < SDLAYOUT_MAX && strlen(rpath) < SDLAYOUT_PATH && first >= 2) {
+                    SdLayoutEntry *x = &l->e[l->n++];
+                    snprintf(x->path, sizeof x->path, "%s", rpath);
+                    x->start = first;
+                    x->nclus = 0;
+                    for (uint32_t fc = first; fc && x->nclus < w->g.nclus; fc = next_clus(w, fc)) x->nclus++;
+                } else {
+                    l->overflow++;
+                }
+                if ((e[11] & 0x10) && first >= 2) export_dir(w, first, hpath, rpath, depth + 1);
+                continue;
+            }
             if (e[11] & 0x10) {
                 make_dir(hpath);
                 if (first >= 2) export_dir(w, first, hpath, rpath, depth + 1);
@@ -640,6 +690,66 @@ static bool sync_folder(SdCard *c)
 
 /* ------------------------------------------------------------------------ */
 
+static bool walk_init(SdCard *c, Walk *w)
+{
+    const uint8_t *bs = c->mem + PART_LBA * SECTOR;
+    if (get16(bs + 510) != 0xAA55 || get16(bs + 11) != SECTOR) return false;
+    w->g.spc = bs[13];
+    w->g.fatsz = get32(bs + 36);
+    w->g.fat_lba = PART_LBA + get16(bs + 14);
+    w->g.data_lba = w->g.fat_lba + (uint64_t)bs[16] * w->g.fatsz;
+    w->g.sectors = get32(bs + 32);
+    if (!w->g.spc || w->g.data_lba >= PART_LBA + (uint64_t)w->g.sectors) return false;
+    w->g.nclus = (uint32_t)((PART_LBA + (uint64_t)w->g.sectors - w->g.data_lba) / w->g.spc);
+    return true;
+}
+
+bool sdcard_layout_get(SdCard *c, SdLayout *out)
+{
+    memset(out, 0, sizeof *out);
+    if (!c || !c->mem) return false;
+    Walk w = { c->mem, { 0 }, NULL, 0, 0, out };
+    if (!walk_init(c, &w)) return false;
+    const uint32_t root = get32(c->mem + PART_LBA * SECTOR + 44);
+    SdLayoutEntry *x = &out->e[out->n++];
+    x->path[0] = 0;
+    x->start = root;
+    for (uint32_t fc = root; fc && x->nclus < w.g.nclus; fc = next_clus(&w, fc)) x->nclus++;
+    export_dir(&w, root, "", "", 0);
+    out->card_size = c->size;
+    return true;
+}
+
+static bool layout_same(const SdLayout *a, const SdLayout *b)
+{
+    if (a->card_size != b->card_size || a->n != b->n) return false;
+    for (uint32_t i = 0; i < a->n; i++)
+        if (strcmp(a->e[i].path, b->e[i].path) || a->e[i].start != b->e[i].start) return false;
+    return true;
+}
+
+bool sdcard_layout_apply(SdCard *c, const SdLayout *l)
+{
+    if (!c || !c->mem || !l || !l->card_size || !l->n) return false;
+    SdLayout now;
+    if (sdcard_layout_get(c, &now) && layout_same(&now, l)) return true;
+    sdcard_sync(c);                     /* what the program wrote goes into the folder first */
+    char err[256];
+    char **files = NULL;
+    int nfiles = 0;
+    uint8_t *mem = build_from_folder(c->folder, l->card_size, &files, &nfiles, err, sizeof err, l);
+    if (!mem) return false;
+    for (int i = 0; i < c->nfiles; i++) free(c->files[i]);
+    free(c->files);
+    free(c->mem);
+    c->mem = mem;
+    c->size = l->card_size;
+    c->files = files;
+    c->nfiles = nfiles;
+    c->dirty = false;
+    return true;
+}
+
 static bool is_dir(const char *path)
 {
     struct stat st;
@@ -658,7 +768,7 @@ SdCard *sdcard_open(const char *path, uint32_t size_mb, char *err, size_t errlen
     if (is_dir(folder)) {
         snprintf(c->folder, sizeof c->folder, "%s", folder);
         c->size = size_mb ? (uint64_t)size_mb << 20 : card_size_for(folder);
-        c->mem = build_from_folder(folder, c->size, &c->files, &c->nfiles, err, errlen);
+        c->mem = build_from_folder(folder, c->size, &c->files, &c->nfiles, err, errlen, NULL);
         if (!c->mem) { free(c); return NULL; }
         return c;
     }
@@ -724,7 +834,7 @@ bool sdcard_make_image(const char *out, const char *folder, uint32_t size_mb, ch
     }
     if (folder) {
         /* built in memory, then written out */
-        uint8_t *mem = build_from_folder(folder, size, NULL, NULL, err, errlen);
+        uint8_t *mem = build_from_folder(folder, size, NULL, NULL, err, errlen, NULL);
         if (!mem) return false;
         FILE *f = fopen(out, "wb");
         bool ok = f && fwrite(mem, 1, (size_t)size, f) == size;

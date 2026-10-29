@@ -3,6 +3,7 @@ package com.jadflat.chgame;
 import android.app.Activity;
 import android.content.SharedPreferences;
 import android.app.AlertDialog;
+import android.content.pm.ActivityInfo;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
@@ -51,7 +52,11 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     private int tapFrames;                  /* so a game reading its buttons at 30 fps still sees it */
     private static final int TAP_FRAMES = 3;
     private volatile boolean fast;          /* fast-forward held */
-    private boolean hotkey;                 /* M2 held: with START, quit */
+    private int quitKey1, quitKey2;         /* the quit combo's keys (Options: M2 then START by default) */
+    private boolean quitHold, quitOff;      /* held for 2 s; or no combo at all */
+    private boolean quitKey1Down, quitFired;   /* the first key is down; the combo took the second key's press */
+    private final Runnable quitLater = this::quit;   /* the held combo: quit when its 2 s are up */
+    private static final long QUIT_HOLD_MS = 2000;
     private static final int FAST_SPEED = 3;
     private final int[] screen = new int[128 * 128];   /* the last frame, for a screenshot */
     private volatile boolean running;
@@ -129,6 +134,15 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         title = getIntent().getStringExtra("title");
         if (name == null || (game == null && copied == null)) { finish(); return; }
         keymap = Keymap.load(prefs, name);      /* this game's own keys, else the main ones */
+        quitKey1 = Options.quitKey1(prefs);
+        quitKey2 = Options.quitKey2(prefs);
+        quitHold = Options.quitHold(prefs);
+        quitOff = Options.quitOff(prefs);
+        /* this game's screen rotation (GameSettingsActivity): follow the device, or always upright or sideways */
+        String rotate = prefs.getString("rotate:" + name, "auto");
+        setRequestedOrientation("portrait".equals(rotate) ? ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
+                : "landscape".equals(rotate) ? ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                : ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR);
         fresh = resetNext;
         resetNext = false;
 
@@ -204,16 +218,71 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
             return;
         }
         menuOpen = true;
-        new AlertDialog.Builder(this, Ui.dialogTheme())
-                .setTitle(title != null ? title : Saves.base(name))
-                .setItems(new String[] { "Continue where you left off  (" + Saves.describe(f) + ")",
-                        "Start from the beginning" }, (d, which) -> {
-                    if (which == 0) continueFrom(f);
-                    autosave = true;
-                    closeMenu();
-                })
-                .setOnCancelListener(d -> { autosave = true; closeMenu(); })
-                .show();
+        /* a card: the game's name, then Continue (focused) and Start from the beginning */
+        android.app.Dialog dlg = new android.app.Dialog(this);
+        dlg.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        int pad = Ui.dp(this, 24);
+        box.setPadding(pad, pad, pad, Ui.dp(this, 20));
+        box.setBackground(Ui.rounded(this, Ui.SURFACE, 28));
+        TextView head = Ui.text(this, title != null ? title : Saves.base(name), 16, Ui.ON_SURFACE, Ui.pixel(this));
+        head.setGravity(Gravity.CENTER);
+        box.addView(head);
+        head.setPadding(0, 0, 0, Ui.dp(this, 16));
+        View cont = menuButton("Continue", "Where you left off, " + Saves.describe(f)),
+                fresh = menuButton("Start from the beginning", "A new game");
+        cont.setOnClickListener(v -> { continueFrom(f); autosave = true; dlg.dismiss(); closeMenu(); });
+        fresh.setOnClickListener(v -> { autosave = true; dlg.dismiss(); closeMenu(); });
+        box.addView(cont);
+        LinearLayout.LayoutParams fp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        fp.setMargins(0, Ui.dp(this, 10), 0, 0);
+        box.addView(fresh, fp);
+        dlg.setContentView(box);
+        /* B or Back: back to the list, the game not started and its resume point untouched */
+        dlg.setOnCancelListener(d -> { skipResume = true; finish(); });
+        /* the pad moves the highlight at once (no first press lost leaving touch mode) */
+        dlg.setOnKeyListener((d, code, ev) -> {
+            if (ev.getAction() != KeyEvent.ACTION_DOWN) return false;
+            if (code == KeyEvent.KEYCODE_DPAD_DOWN || code == KeyEvent.KEYCODE_DPAD_UP) {
+                boolean down = code == KeyEvent.KEYCODE_DPAD_DOWN;
+                cont.setSelected(!down);
+                fresh.setSelected(down);
+                return true;
+            }
+            /* the game's own A and B, as mapped (on a Retroid, Android's BUTTON_B is the key marked A) */
+            int b = keymap != null ? keymap.button(code) : 0;
+            if (b == Native.B) { d.cancel(); return true; }
+            if (b == Native.A || code == KeyEvent.KEYCODE_DPAD_CENTER || code == KeyEvent.KEYCODE_ENTER) {
+                (fresh.isSelected() ? fresh : cont).performClick();
+                return true;
+            }
+            return false;
+        });
+        android.view.Window w = dlg.getWindow();
+        if (w != null) {
+            w.setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(Color.TRANSPARENT));
+            int wide = Math.min(Ui.dp(this, 420), (int) (getResources().getDisplayMetrics().widthPixels * 0.9f));
+            w.setLayout(wide, android.view.ViewGroup.LayoutParams.WRAP_CONTENT);
+        }
+        dlg.show();
+        cont.setSelected(true);
+    }
+
+    /** One of the start card's rows, styled like the list's and Options' rows: a name and a line under it. */
+    private View menuButton(String label, String detail) {
+        LinearLayout b = new LinearLayout(this);
+        b.setOrientation(LinearLayout.VERTICAL);
+        b.setPadding(Ui.dp(this, 16), Ui.dp(this, 12), Ui.dp(this, 16), Ui.dp(this, 12));
+        b.setBackground(Ui.card(this, Ui.SURFACE_HIGH, 16));
+        b.addView(Ui.text(this, label, 17, Ui.ON_SURFACE, Ui.MEDIUM));
+        b.addView(Ui.text(this, detail, 14, Ui.ON_SURFACE_VARIANT, Typeface.DEFAULT));
+        /* not focusable: the card's key listener moves one highlight (selected), so focus never lights a second row */
+        b.setFocusable(false);
+        b.setClickable(true);
+        /* the highlight shows from the start, as in the list, not only after a first key press */
+        return b;
     }
 
     private void continueFrom(File f) {
@@ -235,6 +304,15 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     }
 
     private void immersive() {
+        if (android.os.Build.VERSION.SDK_INT >= 30) {
+            getWindow().setDecorFitsSystemWindows(false);
+            android.view.WindowInsetsController c = getWindow().getInsetsController();
+            if (c != null) {
+                c.setSystemBarsBehavior(android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+                c.hide(android.view.WindowInsets.Type.statusBars() | android.view.WindowInsets.Type.navigationBars());
+            }
+            return;
+        }
         getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
                 | View.SYSTEM_UI_FLAG_FULLSCREEN | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
                 | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
@@ -250,6 +328,12 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         } else {
             pauseGame();
         }
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        immersive();
     }
 
     @Override
@@ -748,7 +832,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         int bottom = 0;                                  /* portrait: stay above the navigation bar */
         if (portrait()) {
             android.view.WindowInsets wi = frame.getRootWindowInsets();
-            if (wi != null) bottom = Math.max(wi.getSystemWindowInsetBottom(), wi.getStableInsetBottom());
+            if (wi != null) bottom = wi.getStableInsetBottom();     /* stable: the same whether the bars show or hide */
         }
         FrameLayout.LayoutParams old = (FrameLayout.LayoutParams) touch.getLayoutParams();
         if (old != null && old.topMargin == top && old.height == h - top - bottom) return;   /* no change: no new layout */
@@ -773,16 +857,9 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         int code = ev.getKeyCode();
         /* a pad or keyboard is in use: no touch pad (not for BACK or volume, which phones have too) */
         if (touchAuto && !ev.isSystem()) touch.setVisibility(View.GONE);
-        /* hold M2 (BUTTON_Z on the Retroid) and press START: quit, as other emulators do
-           from ES-DE; the resume point is saved as for any quit */
-        if (code == KeyEvent.KEYCODE_BUTTON_Z) {
-            hotkey = ev.getAction() == KeyEvent.ACTION_DOWN;
-            return true;
-        }
-        if (hotkey && code == KeyEvent.KEYCODE_BUTTON_START) {
-            if (ev.getAction() == KeyEvent.ACTION_DOWN) quit();
-            return true;
-        }
+        /* the quit combo (Options): hold M2 (BUTTON_Z on the Retroid) and press START, by default; the
+           resume point is saved as for any quit */
+        if (!quitOff && (code == quitKey1 || code == quitKey2) && quitCombo(ev, code)) return true;
         int b = keymap.button(code);
         if (b == Keymap.UP2) b = Native.UP;   /* a second Up, on Y unless Map buttons moved it */
         if (code == KeyEvent.KEYCODE_BACK || b == Keymap.MENU) {
@@ -810,6 +887,31 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         if (b == 0) return super.dispatchKeyEvent(ev);
         if (ev.getAction() == KeyEvent.ACTION_DOWN) { keys |= b; pressed |= b; tapFrames = 0; }
         else if (ev.getAction() == KeyEvent.ACTION_UP) keys &= ~b;
+        return true;
+    }
+
+    /** The quit combo's key events. True: the key is the combo's (not the game's). The first key is always
+     *  taken, as M2 was; the second is taken only while the first is down, and quits (at once, or after 2 s
+     *  held with the hold setting). */
+    private boolean quitCombo(KeyEvent ev, int code) {
+        boolean down = ev.getAction() == KeyEvent.ACTION_DOWN, up = ev.getAction() == KeyEvent.ACTION_UP;
+        if (code == quitKey1) {
+            if (down || up) quitKey1Down = down;
+            if (up) watch.removeCallbacks(quitLater);
+            return true;
+        }
+        if (up) {
+            watch.removeCallbacks(quitLater);
+            if (!quitFired) return false;
+            quitFired = false;      /* the combo took this press, so its release goes too */
+            return true;
+        }
+        if (!down || !quitKey1Down) return false;
+        if (ev.getRepeatCount() == 0 && !quitFired) {
+            quitFired = true;
+            if (quitHold) watch.postDelayed(quitLater, QUIT_HOLD_MS);
+            else quit();
+        }
         return true;
     }
 
@@ -854,7 +956,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         String[] items = { "Resume", "Save state…", "Load state…", "Save screenshot",
                 clipOn || clipFull ? "Stop clip" : "Record clip",
                 fromFrontEnd() ? "Quit" : "Quit to game list" };
-        new AlertDialog.Builder(this, Ui.dialogTheme())
+        AlertDialog menuDlg = new AlertDialog.Builder(this, Ui.dialogTheme())
                 .setTitle(title != null ? title : Saves.base(name))
                 .setItems(items, (d, which) -> {
                     if (which == 1 || which == 2) {
@@ -867,7 +969,9 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
                     else closeMenu();
                 })
                 .setOnCancelListener(d -> closeMenu())
-                .show();
+                .create();
+        menuDlg.show();
+        menuDlg.getListView().setSelection(0);     /* the pad's cursor starts on Resume */
     }
 
     /** Quick save or quick load from a pad key: slot 1, as the menu's slot 1 (the game paused). */
@@ -930,6 +1034,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
             picture.setScaleType(ImageView.ScaleType.FIT_CENTER);
             Bitmap pic = BitmapFactory.decodeFile(Saves.pictureFile(f[i]).getPath());   /* null: no picture */
             if (pic != null) picture.setImageBitmap(pic);
+            else picture.setVisibility(View.GONE);   /* no empty gap before the text */
             row.addView(picture, new LinearLayout.LayoutParams(Ui.dp(this, 64), Ui.dp(this, 64)));
             TextView label = Ui.text(this, items[i], 16, Ui.ON_SURFACE, Ui.REGULAR);
             label.setPadding(pad, 0, 0, 0);
