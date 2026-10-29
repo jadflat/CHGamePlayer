@@ -440,7 +440,7 @@ static void mount_dats(const char *game, const char *card_dir)
     closedir(d);
     for (int k = 0; k < n; k++) {
         if (sd_has_file(card_dir, picked[k])) continue;
-        char from[1500], to[1500];
+        char from[4096], to[4096];
         snprintf(from, sizeof from, "%s/%s", dir, picked[k]);
         snprintf(to, sizeof to, "%s/%s", card_dir, picked[k]);
         copy_file(from, to);
@@ -465,7 +465,7 @@ static void check_dat_files(const char *path, const char *card_dir)
     }
     if (!missing) return;
 
-    static char shown[300];
+    static char shown[400];
     snprintf(shown, sizeof shown, "Missing on the SD card: %s (put %s in system/chgame/sdcard)",
              msg, missing > 1 ? "them" : "it");
     core_log(RETRO_LOG_WARN, "%s", shown);
