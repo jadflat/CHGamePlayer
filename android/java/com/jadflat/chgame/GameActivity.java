@@ -731,10 +731,10 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         return getResources().getConfiguration().orientation == android.content.res.Configuration.ORIENTATION_PORTRAIT;
     }
 
-    /** The picture's side for a w x h surface. Portrait: the widest whole-number scale (fit if under 1x). */
+    /** The picture's side for a w x h surface. Portrait: the widest whole-number scale (fit if under 1x), or with fill the full width. */
     private int pictureSide(int w, int h) {
         if (portrait()) {
-            int s = w >= 128 ? w / 128 * 128 : Math.min(w, h);
+            int s = fill ? Math.min(w, h) : w >= 128 ? w / 128 * 128 : Math.min(w, h);
             return s <= h ? s : Math.min(w, h);
         }
         int side = Math.min(w, h);

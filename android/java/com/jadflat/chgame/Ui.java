@@ -119,7 +119,11 @@ final class Ui {
                 l = in.getSystemWindowInsetLeft(); t = in.getSystemWindowInsetTop();
                 r = in.getSystemWindowInsetRight(); b = in.getSystemWindowInsetBottom();
             }
-            v.setPadding(l + pad, t + pad, r + pad, b + pad);
+            /* upright, the bars already leave space: only a small gap above and below */
+            boolean port = v.getHeight() > v.getWidth() || a.getResources().getConfiguration().orientation
+                    == android.content.res.Configuration.ORIENTATION_PORTRAIT;
+            int pv = port ? dp(a, 4) : pad;
+            v.setPadding(l + pad, t + pv, r + pad, b + pv);
             return in;
         });
     }

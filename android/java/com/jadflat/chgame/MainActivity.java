@@ -50,11 +50,11 @@ import java.util.concurrent.Executors;
  * Options, where everything else lives.
  */
 public class MainActivity extends Activity {
-    static final String VERSION = "0.35";
+    static final String VERSION = "0.37";
     static final String PREFS = "chgame";
 
     private SharedPreferences prefs;
-    private TextView count, artTitle, artInfo, artPort;
+    private TextView count, version, artTitle, artInfo, artPort;
     private Preview preview;
     private TextView mute;
     private View[] headIcons;                                   /* the header buttons the pad can reach, left to right */
@@ -101,8 +101,9 @@ public class MainActivity extends Activity {
         name.setLetterSpacing(-0.03f);
         name.setPadding(0, 0, 0, 0);
         titleLine.addView(name);
-        TextView version = Ui.text(this, "v" + VERSION, 14, Ui.ON_SURFACE_VARIANT, Ui.MEDIUM);
+        version = Ui.text(this, "v" + VERSION, 14, Ui.ON_SURFACE_VARIANT, Ui.MEDIUM);
         version.setPadding(Ui.dp(this, 10), Ui.dp(this, 6), 0, 0);
+        version.setSingleLine(true);
         titleLine.addView(version);
         heading.addView(titleLine);
         count = Ui.text(this, "", 14, Ui.ON_SURFACE_VARIANT, Ui.REGULAR);
@@ -150,8 +151,18 @@ public class MainActivity extends Activity {
         });
         list.setOnItemLongClickListener((p, v, row, id) -> {
             int g = gameAt(row);
-            if (g >= 0) gameMenu(g, row);
+            if (g >= 0) gameSettings(g, row);
             return g >= 0;
+        });
+        /* portrait: the preview strip is a one-line bar while the list scrolls, whole again 600 ms after */
+        list.setOnScrollListener(new AbsListView.OnScrollListener() {
+            @Override public void onScrollStateChanged(AbsListView v, int state) {
+                if (!portrait()) return;
+                list.removeCallbacks(expandLater);
+                if (state != SCROLL_STATE_IDLE) strip(true);
+                else list.postDelayed(expandLater, 600);
+            }
+            @Override public void onScroll(AbsListView v, int first, int visible, int total) { }
         });
         list.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
             @Override public void onItemSelected(AdapterView<?> p, View v, int row, long id) {
@@ -179,6 +190,7 @@ public class MainActivity extends Activity {
         art = new ArtView(this, 12);
         art.fill = true;            /* as big as the panel allows, not a whole-number scale */
         right.addView(art, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1));
+        art.setOnClickListener(v -> { if (shown >= 0) play(shown); });     /* a tap on the picture starts the selected game */
         info = new LinearLayout(this);          /* title, author line, port note, hints: below the picture, or beside it in portrait */
         info.setOrientation(LinearLayout.VERTICAL);
         info.setGravity(Gravity.CENTER_HORIZONTAL);
@@ -225,6 +237,37 @@ public class MainActivity extends Activity {
     public void onConfigurationChanged(android.content.res.Configuration c) {
         super.onConfigurationChanged(c);
         applyOrientation();
+        if (!games.isEmpty()) {                 /* portrait has no "Last played" section */
+            buildRows();
+            adapter.notifyDataSetChanged();
+            if (shown >= 0) goTo(shown);
+        }
+    }
+
+    private LinearLayout topRow;                               /* portrait: the picture and the title */
+    private int stripSide;                                      /* portrait: the strip's picture at full size */
+    private boolean stripSmall;
+    private android.animation.ValueAnimator stripAnim;
+    private final Runnable expandLater = () -> strip(false);
+
+    /** Portrait: shrinks the strip to a one-line bar (small = true) or expands it, animated. */
+    private void strip(boolean small) {
+        if (small == stripSmall || stripSide == 0 || !portrait()) return;
+        stripSmall = small;
+        if (stripAnim != null) stripAnim.cancel();
+        if (small) {
+            info.setVisibility(View.GONE);
+        } else {
+            info.setVisibility(View.VISIBLE);
+        }
+        int from = art.getLayoutParams().height, to = small ? Ui.dp(this, 40) : stripSide;
+        stripAnim = android.animation.ValueAnimator.ofInt(from, to);
+        stripAnim.setDuration(220);
+        stripAnim.addUpdateListener(a -> {
+            int s = (Integer) a.getAnimatedValue();
+            art.setLayoutParams(new LinearLayout.LayoutParams(s, s));
+        });
+        stripAnim.start();
     }
 
     private boolean portrait() {
@@ -234,24 +277,44 @@ public class MainActivity extends Activity {
     /** Landscape: the list left, the preview right. Portrait: the preview on top (square, whole-number scale), the list below. */
     private void applyOrientation() {
         boolean port = portrait();
+        if (stripAnim != null) stripAnim.cancel();
+        list.removeCallbacks(expandLater);
+        info.setVisibility(View.VISIBLE);
+        stripSmall = false;
+        stripSide = 0;
         root.setOrientation(port ? LinearLayout.VERTICAL : LinearLayout.HORIZONTAL);
         root.removeAllViews();
         if (right.getParent() != null) ((android.view.ViewGroup) right.getParent()).removeView(right);
         art.fill = !port;
         hintRow.setVisibility(port ? View.GONE : View.VISIBLE);
-        right.setOrientation(port ? LinearLayout.HORIZONTAL : LinearLayout.VERTICAL);
-        right.setGravity(port ? Gravity.CENTER_VERTICAL : Gravity.CENTER_HORIZONTAL);
+        /* a narrow screen has no room beside the name: wrapped, the version stood one letter a line */
+        version.setVisibility(port ? View.GONE : View.VISIBLE);
+        right.setOrientation(LinearLayout.VERTICAL);
+        right.setGravity(Gravity.CENTER_HORIZONTAL);
+        if (topRow == null) { topRow = new LinearLayout(this); topRow.setGravity(Gravity.CENTER_VERTICAL); }
+        topRow.removeAllViews();
+        right.removeAllViews();
+        if (artTitle.getParent() != null) ((android.view.ViewGroup) artTitle.getParent()).removeView(artTitle);
         if (port) {
-            /* header on top, then a compact strip (at most ~22% of the height), the list below */
+            /* header on top, then a strip: picture and title side by side, the info text under them */
             int pad = Ui.dp(this, 10);
             right.setPadding(pad, pad, pad, pad);
             int side = (int) (getResources().getDisplayMetrics().heightPixels * 0.22f) - 2 * pad;
             side = side >= 256 ? side / 128 * 128 : Math.max(side, 96);     /* whole-number scale if it fits */
             art.setLayoutParams(new LinearLayout.LayoutParams(side, side));
-            info.setGravity(Gravity.CENTER_VERTICAL);
-            right.removeView(info);
-            LinearLayout.LayoutParams ip = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1);
-            ip.setMargins(Ui.dp(this, 14), 0, 0, 0);
+            stripSide = side;
+            topRow.addView(art);
+            artTitle.setPadding(0, 0, 0, 0);
+            artTitle.setMaxLines(3);
+            LinearLayout.LayoutParams tp = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1);
+            tp.setMargins(Ui.dp(this, 14), 0, 0, 0);
+            topRow.addView(artTitle, tp);
+            right.addView(topRow, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT));
+            info.setGravity(Gravity.START);
+            LinearLayout.LayoutParams ip = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT);
+            ip.setMargins(0, Ui.dp(this, 8), 0, 0);
             right.addView(info, ip);
             artTitle.setGravity(Gravity.START);
             artInfo.setGravity(Gravity.START);
@@ -264,8 +327,12 @@ public class MainActivity extends Activity {
         } else {
             right.setPadding(Ui.dp(this, 16), Ui.dp(this, 16), Ui.dp(this, 16), Ui.dp(this, 14));
             art.setLayoutParams(new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1));
+            right.addView(art);
+            artTitle.setPadding(0, Ui.dp(this, 12), 0, Ui.dp(this, 4));
+            artTitle.setMaxLines(2);
+            info.addView(artTitle, 0, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT));
             info.setGravity(Gravity.CENTER_HORIZONTAL);
-            right.removeView(info);
             right.addView(info, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT));
             artTitle.setGravity(Gravity.CENTER);
@@ -528,7 +595,7 @@ public class MainActivity extends Activity {
                 Stats.last(this, fileName(games.get(a)))));
         if (recent.size() > RECENT) recent = recent.subList(0, RECENT);
         addSection("★ Favourites", fav);
-        addSection("Last played", recent);
+        if (!portrait()) addSection("Last played", recent);     /* portrait: the strip shows it */
         addSection("CHGame originals", originals);
         addSection("Ports", ports);
     }
@@ -837,7 +904,15 @@ public class MainActivity extends Activity {
         refresh();
     }
 
-    /** A long press: what can be done with this game. */
+    /** A long press on a touch screen: the game's settings page. */
+    private void gameSettings(int pos, int row) {
+        select(pos, row);
+        Files.Entry e = games.get(pos);
+        startActivity(new Intent(this, GameSettingsActivity.class)
+                .putExtra("file", fileName(e)).putExtra("title", displayTitle(e)));
+    }
+
+    /** What can be done with this game (the menu: long press is now the settings page). */
     private void gameMenu(int pos, int row) {
         select(pos, row);
         Files.Entry e = games.get(pos);
@@ -1084,7 +1159,7 @@ public class MainActivity extends Activity {
             card.setFocusable(false);
             /* a tap selects; a tap on the selected cell plays, as in the list */
             card.setOnClickListener(v -> { if (row == shownRow && g == shown) play(g); else select(g, row); });
-            card.setOnLongClickListener(v -> { gameMenu(g, row); return true; });
+            card.setOnLongClickListener(v -> { gameSettings(g, row); return true; });
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(cell - gap, LinearLayout.LayoutParams.WRAP_CONTENT);
             lp.setMargins(gap / 2, 0, gap / 2, gap);     /* cell wide in all, margins included */
             line.addView(card, lp);

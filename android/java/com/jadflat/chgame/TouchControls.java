@@ -88,7 +88,7 @@ final class TouchControls extends View {
         for (int g = 0; g < GROUPS; g++) {
             fx[g] = 0;
             fy[g] = 0;
-            gs[g] = 1;
+            gs[g] = portrait() && g <= G_B ? 1.15f : 1;     /* portrait: the d-pad and A/B a bit bigger */
             String v = p.getString(prefix() + GROUP_KEYS[g], null);
             if (v == null) continue;
             String[] a = v.split(",");
@@ -97,7 +97,7 @@ final class TouchControls extends View {
                 fy[g] = Math.max(-1f, Math.min(1f, Float.parseFloat(a[1])));
                 gs[g] = Math.max(MIN_SCALE, Math.min(MAX_SCALE, Float.parseFloat(a[2])));
             } catch (RuntimeException e) {
-                fx[g] = 0; fy[g] = 0; gs[g] = 1;
+                fx[g] = 0; fy[g] = 0; gs[g] = portrait() && g <= G_B ? 1.15f : 1;
             }
         }
         vibrate = Options.vibrate(p);
@@ -140,7 +140,7 @@ final class TouchControls extends View {
     /** The picture's side in a game for a w x h screen (the same as GameActivity works it out). */
     static int pictureSide(boolean portrait, boolean fill, int w, int h) {
         if (portrait) {
-            int s = w >= 128 ? w / 128 * 128 : Math.min(w, h);
+            int s = fill ? Math.min(w, h) : w >= 128 ? w / 128 * 128 : Math.min(w, h);
             return s <= h ? s : Math.min(w, h);
         }
         int side = Math.min(w, h);
@@ -335,9 +335,10 @@ final class TouchControls extends View {
 
     /** The control under (x, y), or NONE. */
     private int hit(float x, float y, float sl) {
-        if (d2(x, y, dpadX, dpadY) <= sq(dpadR + sl)) return DPAD;
-        if (d2(x, y, aX, aY) <= sq(btnRA + sl)) return A;
-        if (d2(x, y, bX, bY) <= sq(btnRB + sl)) return B;
+        float more = portrait() ? 0.2f : 0f;               /* portrait: the hit area 20% beyond the drawing */
+        if (d2(x, y, dpadX, dpadY) <= sq(dpadR * (1 + more) + sl)) return DPAD;
+        if (d2(x, y, aX, aY) <= sq(btnRA * (1 + more) + sl)) return A;
+        if (d2(x, y, bX, bY) <= sq(btnRB * (1 + more) + sl)) return B;
         if (inPill(x, y, selX, pillY, pillW, pillH, sl)) return SELECT;
         if (inPill(x, y, startX, pillY, pillW, pillH, sl)) return START;
         if (inPill(x, y, menuX, menuY, menuW, menuH, sl)) return MENU;

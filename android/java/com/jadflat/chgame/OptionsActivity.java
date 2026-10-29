@@ -90,7 +90,7 @@ public class OptionsActivity extends Page {
         row("Resume where you left off", Options.RESUME_NAMES[indexOf(Options.RESUMES, Options.resume(prefs))],
                 () -> pick("Resume where you left off", Options.RESUME_NAMES, indexOf(Options.RESUMES, Options.resume(prefs)),
                         i -> prefs.edit().putString("resume", Options.RESUMES[i]).apply()));
-        row("Picture size", Options.fill(prefs) ? "Fill the screen height" : "Sharp: a whole-number scale, every pixel the same", () -> {
+        row("Picture size", Options.fill(prefs) ? "Fill width: the full width in portrait, the full height in landscape" : "Whole steps: a whole-number scale, every pixel the same", () -> {
             prefs.edit().putBoolean("fill", !Options.fill(prefs)).apply();
             build();
         });
