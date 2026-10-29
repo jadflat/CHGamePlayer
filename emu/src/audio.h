@@ -19,6 +19,7 @@ typedef struct {
 extern const int   chg_piezo_taps;
 extern const float chg_piezo_fir[];
 
+extern int chg_audio_dc_block;
 void chg_audio_init(ChgAudio *a, int rate, uint64_t now);
 /* samples for the cycles run since the last call, at most max */
 int  chg_audio_render(ChgAudio *a, ChgMachine *m, float *out, int max);

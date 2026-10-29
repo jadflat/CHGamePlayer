@@ -302,6 +302,8 @@ static inline void chg_kick(ChgMachine *m) { m->stop_at = 0; }
 /* rv32.c */
 void     cpu_reset(ChgMachine *m);
 void     cpu_exec(ChgMachine *m);
+extern int chg_cpu_pct;                 /* CPU speed, percent of the board's (100-300) */
+extern uint64_t chg_idle_cycles;        /* cycles the CPU has slept (WFI): not saved, for a load display */
 bool     cpu_take_interrupt(ChgMachine *m);
 bool     cpu_irq_waiting(ChgMachine *m);
 void     cpu_invalidate_flash(ChgMachine *m, uint32_t addr, uint32_t len);

@@ -11,6 +11,8 @@
 #include <string.h>
 #include "machine.h"
 
+uint64_t chg_idle_cycles;
+
 void chg_init(ChgMachine *m)
 {
     memset(m, 0, sizeof(*m));
@@ -74,6 +76,7 @@ void chg_run(ChgMachine *m, uint64_t until)
                 m->cpu.wfi = false;
                 continue;
             }
+            if (stop > m->cycles) chg_idle_cycles += stop - m->cycles;
             m->cycles = stop > m->cycles ? stop : m->cycles;
             if (cpu_irq_waiting(m))
                 m->cpu.wfi = false;

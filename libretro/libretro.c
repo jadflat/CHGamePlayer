@@ -14,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
+#include <math.h>
 #include <sys/stat.h>
 #include <dirent.h>
 #ifdef _WIN32
@@ -29,12 +30,13 @@
 #include "audio.h"
 #include "sdcard.h"
 
-#define CORE_VERSION    "0.3"
+#define CORE_VERSION    "0.4"
 #define AUDIO_RATE      48000
 #define FPS             60
 #define FRAME_CYCLES    (CHG_HCLK / FPS)
 #define FRAME_SAMPLES   (AUDIO_RATE / FPS)
 #define MAX_SCALE       6
+#define MAX_DATS        8      /* .DAT files put on the card for a game */
 #define SAVE_STATE_MAGIC_V1 0x43484731u   /* "CHG1": the machine and audio only */
 #define SAVE_STATE_MAGIC 0x43484732u      /* "CHG2": and where the card's files sit */
 
@@ -56,6 +58,55 @@ static bool       loaded;
 static bool       use_mask;         /* RETRO_DEVICE_ID_JOYPAD_MASK is supported */
 static char       save_path[1100];
 static char       sd_path[1100];
+/* Sound models and tone options: a chain of up to 5 biquads (RBJ cookbook) on
+   the mono signal, after the emulator's own audio. Bare pin and Piezo with the
+   other options off add nothing, so they match the emulator's output. */
+typedef struct { float b0, b1, b2, a1, a2, z1, z2; } Biquad;
+static Biquad     chain[5];
+static int        nchain;
+static bool       soft_clip;        /* volume above 100%: round the peaks instead of clipping */
+static float      bq_x(Biquad *q, float x)
+{
+    const float y = q->b0 * x + q->z1;
+    q->z1 = q->b1 * x - q->a1 * y + q->z2;
+    q->z2 = q->b2 * x - q->a2 * y;
+    return y;
+}
+/* kind: 'l' low-pass, 'h' high-pass, 'p' peaking, 's' low shelf, 'S' high shelf */
+static void bq_add(char kind, float f0, float q, float db)
+{
+    if (nchain >= 5) return;
+    const float w = 6.2831853f * f0 / AUDIO_RATE, cs = cosf(w), sn = sinf(w), al = sn / (2 * q);
+    const float A = powf(10.0f, db / 40.0f), sa = 2 * sqrtf(A) * al;
+    float b0, b1, b2, a0, a1, a2;
+    switch (kind) {
+    case 'l': b0 = (1 - cs) / 2; b1 = 1 - cs; b2 = b0; a0 = 1 + al; a1 = -2 * cs; a2 = 1 - al; break;
+    case 'h': b0 = (1 + cs) / 2; b1 = -(1 + cs); b2 = b0; a0 = 1 + al; a1 = -2 * cs; a2 = 1 - al; break;
+    case 'p': b0 = 1 + al * A; b1 = -2 * cs; b2 = 1 - al * A; a0 = 1 + al / A; a1 = -2 * cs; a2 = 1 - al / A; break;
+    case 's': b0 = A * ((A + 1) - (A - 1) * cs + sa); b1 = 2 * A * ((A - 1) - (A + 1) * cs);
+              b2 = A * ((A + 1) - (A - 1) * cs - sa); a0 = (A + 1) + (A - 1) * cs + sa;
+              a1 = -2 * ((A - 1) + (A + 1) * cs); a2 = (A + 1) + (A - 1) * cs - sa; break;
+    default:  b0 = A * ((A + 1) + (A - 1) * cs + sa); b1 = -2 * A * ((A - 1) + (A + 1) * cs);
+              b2 = A * ((A + 1) + (A - 1) * cs - sa); a0 = (A + 1) - (A - 1) * cs + sa;
+              a1 = 2 * ((A - 1) - (A + 1) * cs); a2 = (A + 1) - (A - 1) * cs - sa; break;
+    }
+    chain[nchain++] = (Biquad){ b0 / a0, b1 / a0, b2 / a0, a1 / a0, a2 / a0, 0, 0 };
+}
+static float      sound_x(float x)
+{
+    for (int i = 0; i < nchain; i++) x = bq_x(&chain[i], x);
+    if (soft_clip) {        /* linear to 0.8, then a smooth knee to 1.0 */
+        const float a = x < 0 ? -x : x;
+        if (a > 0.8f) { const float y = 0.8f + 0.2f * tanhf((a - 0.8f) / 0.2f); x = x < 0 ? -y : y; }
+    }
+    return x;
+}
+static bool       lcd_colour;       /* colour "LCD" */
+static bool       load_osd;         /* the CPU load overlay */
+static bool       dat_all;          /* every .DAT in the game's folder goes on the card */
+static int        osd_value = -1;   /* the load shown, percent */
+static int        osd_frames;
+static uint64_t   osd_idle;
 static uint64_t   last_sync;        /* m.cycles when the SD card was last written back */
 
 static void core_log(enum retro_log_level level, const char *fmt, ...)
@@ -74,22 +125,55 @@ static void core_log(enum retro_log_level level, const char *fmt, ...)
 /* ------------------------------------------------------------------------ */
 
 static const struct retro_variable vars[] = {
-    { "chgame_sound",  "Sound; bare pin|piezo" },
-    { "chgame_volume", "Volume; 50%|60%|70%|80%|90%|100%|120%|150%|10%|20%|30%|40%" },
-    { "chgame_sd",     "microSD card; folder|off" },
+    { "chgame_sound",  "Sound model; bare pin|piezo|Speaker|Soft|Warm|Crisp" },
+    { "chgame_volume", "Volume; 50%|25%|75%|100%|150%|Off" },
+    { "chgame_bass",   "Bass; Off|Low|High" },
+    { "chgame_lowpass", "Low-pass; Off|Light|Strong" },
+    { "chgame_dc_block", "DC block; On|Off" },
+    { "chgame_sd",     "microSD card (on load); folder|Image|off" },
+    { "chgame_dat_all", "Data files put on the card (on load); Off|All .DAT in folder" },
+    { "chgame_cpu",    "CPU speed (frame rate unchanged); 100%|150%|200%|300%" },
+    { "chgame_speed_osd", "CPU load display (busy %, top right); Off|On" },
+    { "chgame_colour", "Colour; Raw|LCD" },
     { "chgame_scale",  "Internal upscale (nearest); 1x|2x|3x|4x|5x|6x" },
     { NULL, NULL },
 };
 
+static const char *opt(const char *key)
+{
+    struct retro_variable v = { key, NULL };
+    return (env_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &v) && v.value) ? v.value : "";
+}
+
 static void apply_options(void)
 {
-    struct retro_variable v = { "chgame_sound", NULL };
-    if (env_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &v) && v.value)
-        audio.piezo = !strcmp(v.value, "piezo");
+    const char *snd = opt("chgame_sound");
+    audio.piezo = !strcmp(snd, "piezo");
+    chg_audio_dc_block = strcmp(opt("chgame_dc_block"), "Off") != 0;
+    nchain = 0;
+    memset(chain, 0, sizeof chain);
+    if (!strcmp(snd, "Speaker")) { bq_add('h', 300, 0.7f, 0); bq_add('p', 2500, 1.2f, 5); }
+    else if (!strcmp(snd, "Soft")) bq_add('l', 3000, 0.7f, 0);
+    else if (!strcmp(snd, "Warm")) { bq_add('l', 5000, 0.7f, 0); bq_add('s', 200, 0.7f, 3); }
+    else if (!strcmp(snd, "Crisp")) bq_add('S', 4000, 0.7f, 4);
+    const char *bass = opt("chgame_bass");
+    if (bass[0] == 'L') bq_add('s', 200, 0.7f, 4);
+    else if (bass[0] == 'H') bq_add('s', 200, 0.7f, 8);
+    const char *lp = opt("chgame_lowpass");
+    if (lp[0] == 'L') bq_add('l', 9000, 0.7f, 0);
+    else if (lp[0] == 'S') bq_add('l', 4000, 0.7f, 0);
+    soft_clip = nchain > 0 || audio.volume > 1.0f;
+    const int cpu = atoi(opt("chgame_cpu"));
+    chg_cpu_pct = (cpu >= 100 && cpu <= 300) ? cpu : 100;
+    load_osd = !strcmp(opt("chgame_speed_osd"), "On");
+    lcd_colour = !strcmp(opt("chgame_colour"), "LCD");
+    dat_all = opt("chgame_dat_all")[0] == 'A';
+    struct retro_variable v;
     v.key = "chgame_volume";
     v.value = NULL;
     if (env_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &v) && v.value)
         audio.volume = (float)atoi(v.value) / 100.0f;
+    soft_clip = nchain > 0 || audio.volume > 1.0f;
     v.key = "chgame_scale";
     v.value = NULL;
     unsigned want = 1;
@@ -102,10 +186,33 @@ static void apply_options(void)
     }
 }
 
-static bool sd_enabled(void)
+/* 0 generated folder card, 1 off, 2 an image file beside the game */
+static int sd_mode(void)
 {
-    struct retro_variable v = { "chgame_sd", NULL };
-    return !(env_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &v) && v.value && !strcmp(v.value, "off"));
+    const char *v = opt("chgame_sd");
+    return !strcmp(v, "off") ? 1 : !strcmp(v, "Image") ? 2 : 0;
+}
+
+static bool file_exists(const char *p)
+{
+    FILE *f = fopen(p, "rb");
+    if (f) fclose(f);
+    return f != NULL;
+}
+
+/* <game>.img, else chgame.img in the game's folder */
+static bool find_image(const char *game, char *out, size_t n)
+{
+    snprintf(out, n, "%s", game);
+    char *dot = strrchr(out, '.');
+    char *sl = strrchr(out, '/'), *bs = strrchr(out, '\\');
+    if (bs > sl) sl = bs;
+    if (dot && dot > sl) snprintf(dot, n - (size_t)(dot - out), ".img");
+    else snprintf(out + strlen(out), n - strlen(out), ".img");
+    if (file_exists(out)) return true;
+    if (sl) { snprintf(sl + 1, n - (size_t)(sl + 1 - out), "chgame.img"); return file_exists(out); }
+    snprintf(out, n, "chgame.img");
+    return file_exists(out);
 }
 
 /* ------------------------------------------------------------------------ */
@@ -245,17 +352,17 @@ static bool sd_has_file(const char *dir, const char *name)
     return found;
 }
 
-/* Tells the player about .DAT files the game needs that are not on the card */
-static void check_dat_files(const char *path, const char *card_dir)
+/* The .DAT names the game file asks for */
+static int game_dat_names(const char *path, char names[][16])
 {
     FILE *f = fopen(path, "rb");
-    if (!f) return;
+    if (!f) return 0;
     fseek(f, 0, SEEK_END);
     long size = ftell(f);
     fseek(f, 0, SEEK_SET);
-    if (size <= 0 || size > 16 << 20) { fclose(f); return; }
+    if (size <= 0 || size > 16 << 20) { fclose(f); return 0; }
     uint8_t *data = malloc((size_t)size);
-    if (!data) { fclose(f); return; }
+    if (!data) { fclose(f); return 0; }
     size_t n = fread(data, 1, (size_t)size, f);
     fclose(f);
 
@@ -266,10 +373,86 @@ static void check_dat_files(const char *path, const char *card_dir)
         to = (len < n - 512) ? 512 + len : n;
     }
 
-    char names[DAT_MAX][16];
     const int count = find_dat_names(data + from, to - from, names);
     free(data);
+    return count;
+}
 
+static bool ends_dat(const char *n)
+{
+    const size_t l = strlen(n);
+    return l > 4 && same_name_ci(n + l - 4, ".DAT");
+}
+
+/* length of the common prefix, ignoring case */
+static int common_prefix(const char *a, const char *b)
+{
+    int n = 0;
+    for (; a[n] && b[n] && a[n] != '.' && b[n] != '.'; n++) {
+        int x = a[n], y = b[n];
+        if (x >= 'a' && x <= 'z') x -= 32;
+        if (y >= 'a' && y <= 'z') y -= 32;
+        if (x != y) break;
+    }
+    return n;
+}
+
+static void copy_file(const char *from, const char *to)
+{
+    FILE *a = fopen(from, "rb"), *b = a ? fopen(to, "wb") : NULL;
+    if (b) {
+        static uint8_t buf[1 << 16];
+        for (size_t n; (n = fread(buf, 1, sizeof buf, a)) > 0; ) fwrite(buf, 1, n, b);
+    }
+    if (a) fclose(a);
+    if (b) fclose(b);
+}
+
+/* Up to MAX_DATS .DAT files from the game's folder onto the card (a file
+   already there is left alone: a game may write its own): the ones the game
+   names first, then others sharing at least 3 letters of prefix with the game's
+   name, or every one with the option "All .DAT in folder". */
+static void mount_dats(const char *game, const char *card_dir)
+{
+    char dir[1100], stem[300];
+    snprintf(dir, sizeof dir, "%s", game);
+    char *sl = strrchr(dir, '/'), *bs = strrchr(dir, '\\');
+    if (bs > sl) sl = bs;
+    if (sl) *sl = 0; else snprintf(dir, sizeof dir, ".");
+    snprintf(stem, sizeof stem, "%s", base_name(game));
+    DIR *d = opendir(dir);
+    if (!d) return;
+    char own[DAT_MAX][16];
+    const int nown = game_dat_names(game, own);
+    char picked[MAX_DATS][300];
+    int n = 0;
+    for (int pass = 0; pass < 2; pass++) {
+        rewinddir(d);
+        for (struct dirent *e; (e = readdir(d)) != NULL; ) {
+            if (!ends_dat(e->d_name)) continue;
+            bool is_own = false;
+            for (int k = 0; k < nown; k++) is_own |= same_name_ci(own[k], e->d_name);
+            if (pass == 0 ? !is_own : (is_own || !(dat_all || common_prefix(stem, e->d_name) >= 3))) continue;
+            if (n < MAX_DATS) snprintf(picked[n++], sizeof picked[0], "%s", e->d_name);
+            else core_log(RETRO_LOG_WARN, "more than %d .DAT files: %s left off", MAX_DATS, e->d_name);
+        }
+    }
+    closedir(d);
+    for (int k = 0; k < n; k++) {
+        if (sd_has_file(card_dir, picked[k])) continue;
+        char from[1500], to[1500];
+        snprintf(from, sizeof from, "%s/%s", dir, picked[k]);
+        snprintf(to, sizeof to, "%s/%s", card_dir, picked[k]);
+        copy_file(from, to);
+        core_log(RETRO_LOG_INFO, "put %s on the SD card", picked[k]);
+    }
+}
+
+/* Tells the player about .DAT files the game needs that are not on the card */
+static void check_dat_files(const char *path, const char *card_dir)
+{
+    char names[DAT_MAX][16];
+    const int count = game_dat_names(path, names);
     char msg[256];
     size_t used = 0;
     int missing = 0;
@@ -319,14 +502,28 @@ RETRO_API bool retro_load_game(const struct retro_game_info *game)
     /* the microSD card: <system>/chgame/sdcard, one folder for every game, as one card on the device */
     const char *sys = NULL;
     sd_path[0] = 0;
-    if (sd_enabled() && env_cb(RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY, &sys) && sys) {
-        char chg_dir[1024];
-        join_dir(chg_dir, sizeof chg_dir, sys, "chgame");
-        join_dir(sd_path, sizeof sd_path, chg_dir, "sdcard");
-        if (!(m.sd = sdcard_open(sd_path, 0, err, sizeof err)))
-            core_log(RETRO_LOG_WARN, "SD card %s: %s", sd_path, err);
+    const int mode = sd_mode();
+    bool folder_card = false;
+    char img[1100];
+    if (mode == 2 && find_image(game->path, img, sizeof img)) {
+        if (!(m.sd = sdcard_open(img, 0, err, sizeof err)))
+            core_log(RETRO_LOG_WARN, "SD image %s: %s", img, err);
         else
-            core_log(RETRO_LOG_INFO, "SD card: %s", sd_path);
+            core_log(RETRO_LOG_INFO, "SD card image: %s", img);
+    } else if (mode != 1) {
+        if (mode == 2) core_log(RETRO_LOG_WARN, "no <game>.img or chgame.img beside the game: using the generated card");
+        dat_all = opt("chgame_dat_all")[0] == 'A';
+        if (env_cb(RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY, &sys) && sys) {
+            char chg_dir[1024];
+            join_dir(chg_dir, sizeof chg_dir, sys, "chgame");
+            join_dir(sd_path, sizeof sd_path, chg_dir, "sdcard");
+            mount_dats(game->path, sd_path);
+            folder_card = true;
+            if (!(m.sd = sdcard_open(sd_path, 0, err, sizeof err)))
+                core_log(RETRO_LOG_WARN, "SD card %s: %s", sd_path, err);
+            else
+                core_log(RETRO_LOG_INFO, "SD card: %s", sd_path);
+        }
     }
 
     if (!chg_load_program(&m, game->path, err, sizeof err)) {
@@ -354,7 +551,21 @@ RETRO_API bool retro_load_game(const struct retro_game_info *game)
     apply_options();
     last_sync = m.cycles;
     loaded = true;
-    if (m.sd) check_dat_files(game->path, sd_path);
+    osd_value = -1;
+    if (m.sd && folder_card) check_dat_files(game->path, sd_path);
+
+    /* the machine's RAM for cheats and achievements: 20 KB at 0x20000000 */
+    static struct retro_memory_descriptor md;
+    md.flags = RETRO_MEMDESC_SYSTEM_RAM;
+    md.ptr = m.ram;
+    md.start = CHG_RAM_BASE;
+    md.len = CHG_RAM_SIZE;
+    struct retro_memory_map mm = { &md, 1 };
+    env_cb(RETRO_ENVIRONMENT_SET_MEMORY_MAPS, &mm);
+    /* the card's files are not in a state, and the layout is the machine's own struct */
+    uint64_t quirks = RETRO_SERIALIZATION_QUIRK_ENDIAN_DEPENDENT |
+                      RETRO_SERIALIZATION_QUIRK_PLATFORM_DEPENDENT;
+    env_cb(RETRO_ENVIRONMENT_SET_SERIALIZATION_QUIRKS, &quirks);
     return true;
 }
 
@@ -434,6 +645,45 @@ static uint8_t read_buttons(void)
     return b;
 }
 
+/* colour "LCD": a cheap TFT's lifted blacks, dimmer whites and a cool cast */
+static void tint_lcd(uint32_t *px)
+{
+    for (int i = 0; i < 128 * 128; i++) {
+        const uint32_t c = px[i];
+        const uint32_t r = ((c >> 16) & 255) * 212 / 256 + 22;
+        const uint32_t g = ((c >> 8) & 255) * 220 / 256 + 28;
+        const uint32_t b = (c & 255) * 232 / 256 + 30;
+        px[i] = (r << 16) | (g << 8) | (b > 255 ? 255 : b);
+    }
+}
+
+/* The CPU load overlay: the share of the frame's cycles the emulated CPU was
+   awake (not in WFI), 100% for a game that never sleeps. With CPU speed above
+   100% it falls, so it shows the headroom. Refreshed 4 times a second. */
+static void draw_load(uint32_t *px)
+{
+    static const uint16_t font[11] = {      /* 3x5 digits, then '%'; 15 bits, row major */
+        0x7B6F, 0x2C97, 0x73E7, 0x73CF, 0x5BC9, 0x79CF, 0x79EF, 0x7249, 0x7BEF, 0x7BCF, 0x52A5 };
+    if (osd_frames++ % 15 == 0 || osd_value < 0) {
+        const uint64_t idle = chg_idle_cycles - osd_idle;
+        osd_idle = chg_idle_cycles;
+        const uint64_t span = osd_value < 0 ? FRAME_CYCLES : 15ull * FRAME_CYCLES;
+        int v = 100 - (int)(idle * 100 / span);
+        osd_value = v < 0 ? 0 : v > 100 ? 100 : v;
+    }
+    char t[8];
+    const int len = snprintf(t, sizeof t, "%d%%", osd_value);
+    const int x0 = 128 - (len * 4 + 1) - 1;
+    for (int y = 0; y < 7; y++)
+        for (int x = 0; x < len * 4 + 1; x++) px[(1 + y) * 128 + x0 + x] = 0;
+    for (int k = 0; k < len; k++) {
+        const uint16_t g = font[t[k] == '%' ? 10 : t[k] - '0'];
+        for (int y = 0; y < 5; y++)
+            for (int x = 0; x < 3; x++)
+                if (g >> (14 - (y * 3 + x)) & 1) px[(2 + y) * 128 + x0 + 1 + k * 4 + x] = 0xFFFFFF;
+    }
+}
+
 RETRO_API void retro_run(void)
 {
     bool updated = false;
@@ -445,13 +695,17 @@ RETRO_API void retro_run(void)
 
     int n = chg_audio_render(&audio, &m, samples, AUDIO_RATE);
     for (int i = 0; i < n; i++) {
-        float v = samples[i] * 32767.0f;
+        float x = samples[i];
+        x = sound_x(x);
+        float v = x * 32767.0f;
         v = v > 32767.0f ? 32767.0f : v < -32768.0f ? -32768.0f : v;
         stereo[2 * i] = stereo[2 * i + 1] = (int16_t)v;
     }
     if (n) audio_batch_cb(stereo, (size_t)n);
 
     st7735_render(&m.lcd, pixels);
+    if (lcd_colour) tint_lcd(pixels);
+    if (load_osd) draw_load(pixels);
     if (scale == 1) {
         video_cb(pixels, 128, 128, 128 * sizeof(uint32_t));
     } else {
@@ -500,7 +754,7 @@ RETRO_API bool retro_serialize(void *data, size_t size)
 {
     if (size < sizeof(State)) return false;
     State *s = (State *)data;
-    memset(&s->layout, 0, sizeof s->layout);
+    memset(s, 0, sizeof *s);     /* padding too, so the same machine always gives the same bytes */
     s->magic = SAVE_STATE_MAGIC;
     s->size = (uint32_t)sizeof(State);
     memcpy(&s->m, &m, sizeof m);

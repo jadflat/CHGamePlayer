@@ -18,6 +18,8 @@
 #include "machine.h"
 #include "audio.h"
 
+int chg_audio_dc_block = 1;    /* 0: the pin's DC offset is left in */
+
 void chg_audio_init(ChgAudio *a, int rate, uint64_t now)
 {
     memset(a, 0, sizeof(*a));
@@ -63,7 +65,7 @@ int chg_audio_render(ChgAudio *a, ChgMachine *m, float *out, int max)
 
         /* AC coupling: a first order high pass at about 20 Hz */
         a->dc += (level - a->dc) * (float)(2.0 * 3.14159265 * 20.0 / a->rate);
-        float v = level - a->dc;
+        float v = level - (chg_audio_dc_block ? a->dc : 0.0f);
         /* what the piezo makes of it: its response measured on a real
            CHGame. The filter is fitted at 48 kHz, so other rates skip it */
         a->fir[a->fir_pos] = v;

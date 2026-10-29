@@ -716,6 +716,8 @@ static ChgInsn *fetch(ChgMachine *m, uint32_t pc, ChgInsn *tmp)
     return tmp;
 }
 
+int chg_cpu_pct = 100;
+
 void cpu_exec(ChgMachine *m)
 {
     ChgCpu *c = &m->cpu;
@@ -730,11 +732,14 @@ void cpu_exec(ChgMachine *m)
     uint64_t div_ready = c->div_ready;
     unsigned div_rd = c->div_rd;
     unsigned frac = c->frac8;
+    const unsigned pct = chg_cpu_pct > 100 ? (unsigned)chg_cpu_pct : 100u;
+    uint64_t speed_acc = 0;     /* remainder of the time scaling below, per slice so states replay exactly */
     bool pair_open = false;     /* the last instruction was a RAM store that opened a pair */
     unsigned recent_data = 0;   /* bit n: the instruction n back touched SRAM, from RAM code */
 
     while (m->cycles < m->stop_at) {
         retired++;
+        const uint64_t t_start = m->cycles;
         const ChgInsn *d = fetch(m, pc, &tmp);
         const bool in_flash = pc < CHG_FLASH_SIZE;
         const uint32_t word = in_flash ? FLASH_WORD : RAM_WORD;
@@ -966,6 +971,18 @@ void cpu_exec(ChgMachine *m)
                 start = inflight;
             fw = WIDX(npc) - 1;
             ft = start;
+        }
+        if (pct != 100) {
+            /* a faster CPU against the same peripherals: this instruction took
+               1/pct of the time. Times the prefetcher and divider hold shrink with it */
+            const uint64_t spent = m->cycles - t_start;
+            speed_acc += spent * 100;
+            const uint64_t now = speed_acc / pct;
+            speed_acc -= now * pct;
+            const uint64_t shrink = spent - now;
+            m->cycles -= shrink;
+            ft = ft > shrink ? ft - shrink : 0;
+            div_ready = div_ready > shrink ? div_ready - shrink : 0;
         }
         pc = npc;
     }

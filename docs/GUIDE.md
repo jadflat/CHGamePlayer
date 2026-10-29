@@ -297,6 +297,41 @@ Restart ES-DE afterwards.
 
 ---
 
+### RetroArch: making .CHG files show up
+
+RetroArch only lists files whose extension some installed core claims. If **Load Content** shows
+no `.CHG` files:
+
+- **PC (Windows, Linux, macOS):** copy `chgame_libretro.info` into RetroArch's `info` folder
+  (Windows: `<RetroArch>\info`; Linux: `~/.config/retroarch/cores` or `/usr/share/libretro/info`;
+  macOS: `~/Library/Application Support/RetroArch/info`), then restart RetroArch.
+- **Any platform, including Android:** turn off **Settings > User Interface > Filter Unknown
+  Extensions** (config key `menu_navigation_browser_filter_supported_extensions_enable`).
+  Then the file browser shows every file. This is the fix on Android, where the `info` folder is
+  private to the app and can't be copied into.
+- **Android, installing the core:** copy `chgame_libretro_android.so` to
+  `RetroArch/downloads`, then **Main Menu > Load Core > Install or Restore a Core** and pick it.
+
+**Core options** (Quick Menu > Core Options):
+
+| Option | Values |
+|---|---|
+| `chgame_scale` Internal upscale | 1x to 6x |
+| `chgame_sd` microSD card | folder, Image, off |
+| `chgame_dat_all` Data files on the card | Off, All .DAT in folder |
+| `chgame_cpu` CPU speed (frame rate unchanged) | 100%, 150%, 200%, 300% |
+| `chgame_speed_osd` CPU load display | Off, On |
+| `chgame_sound` Sound model | bare pin, piezo, Speaker, Soft, Warm, Crisp |
+| `chgame_volume` Volume | Off, 25%, 50%, 75%, 100%, 150% |
+| `chgame_bass` Bass | Off, Low, High |
+| `chgame_lowpass` Low-pass | Off, Light, Strong |
+| `chgame_dc_block` DC block | On, Off |
+| `chgame_colour` Colour | Raw, LCD |
+
+Rewind, run-ahead and cheats (the 20 KB RAM is exposed as a memory map) work.
+
+---
+
 ## Speed
 
 Measured on a Retroid Pocket Nova (CHGame Player's speed line, at 60 frames a second, which is
