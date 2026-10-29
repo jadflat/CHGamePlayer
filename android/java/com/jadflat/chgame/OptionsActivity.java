@@ -50,6 +50,8 @@ public class OptionsActivity extends Page {
         int hiddenCount = Options.hidden(prefs).size();
 
         section("Games");
+        row("Get games", "Download CHGame games into the games folder",
+                () -> startActivity(new Intent(this, CatalogueActivity.class)));
         row("Games folder", folderName(), this::pickFolder);
         if (gameFile != null)
             row("Saves: " + gameTitle, "Its own save, the 4 state slots and the resume point",
@@ -125,9 +127,9 @@ public class OptionsActivity extends Page {
         Keymap k = Keymap.load(prefs);
         row("Map buttons", "A: " + k.keyFor(Native.A) + " · B: " + k.keyFor(Native.B) + " · Second Up: " + k.keyFor(Keymap.UP2),
                 () -> startActivity(new Intent(this, MapButtonsActivity.class)));
-        row("Touch controls", Options.TOUCH_NAMES[indexOf(Options.TOUCHES, Options.touch(prefs))],
-                () -> pick("Touch controls", Options.TOUCH_NAMES, indexOf(Options.TOUCHES, Options.touch(prefs)),
-                        i -> prefs.edit().putString("touch", Options.TOUCHES[i]).apply()));
+        row("Touch controls", Options.TOUCH_NAMES[indexOf(Options.TOUCHES, Options.touch(prefs))]
+                + ". Edit layout, opacity, vibrate",
+                () -> startActivity(new Intent(this, TouchSettingsActivity.class)));
 
         section("ES-DE");
         row("ES-DE media folder", mediaName(), this::pickMedia);
@@ -140,8 +142,8 @@ public class OptionsActivity extends Page {
         }
 
         section("About");
-        row("CHGame Player " + MainActivity.VERSION, "An app by jadflat for playing CHGame games. No permissions: "
-                + "it sees only the folders you choose.", null);
+        row("CHGame Player " + MainActivity.VERSION, "An app by jadflat for playing CHGame games. Its only permission is "
+                + "the internet, for Get games; it sees only the folders you choose.", null);
         row("CHGame", "The CHGame handheld, its platform and the SD bootloader are by Kevin Bates (bateske), "
                 + "chgame.website. Apache-2.0; the bootloader is MIT.", null);
         row("Emulation", "CHGame Emulator by joyrider3774, MIT licence: all of the emulation, unchanged.", null);

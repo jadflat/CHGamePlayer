@@ -91,6 +91,11 @@ abstract class Page extends Activity {
 
     /** A row in the current section; with no action it is just information. */
     void row(String title, String summary, Runnable action) {
+        row(title, summary, null, action);
+    }
+
+    /** A row with a word on its right (Installed, Get) in place of the ›. */
+    void row(String title, String summary, String trailing, Runnable action) {
         if (card == null) section("");
         if (card.getChildCount() > 0) {
             View line = new View(this);
@@ -113,7 +118,8 @@ abstract class Page extends Activity {
         }
         r.addView(text, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
         if (action != null) {
-            TextView chevron = Ui.text(this, "›", 24, Ui.OUTLINE, Ui.REGULAR);
+            TextView chevron = trailing != null ? Ui.text(this, trailing, 15, Ui.PRIMARY, Ui.MEDIUM)
+                    : Ui.text(this, "›", 24, Ui.OUTLINE, Ui.REGULAR);
             chevron.setPadding(Ui.dp(this, 12), 0, 0, 0);
             r.addView(chevron);
             r.setClickable(true);
@@ -125,6 +131,11 @@ abstract class Page extends Activity {
                 focusRow = index;
                 action.run();
             });
+        }
+        if (action == null && trailing != null) {
+            TextView t = Ui.text(this, trailing, 15, Ui.ON_SURFACE_VARIANT, Ui.MEDIUM);
+            t.setPadding(Ui.dp(this, 12), 0, 0, 0);
+            r.addView(t);
         }
         if (action == null) {
             /* information rows take the pad's focus too, so the page can scroll to its last lines */

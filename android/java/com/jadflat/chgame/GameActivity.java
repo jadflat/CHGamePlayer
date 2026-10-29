@@ -101,21 +101,23 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         view.getHolder().addCallback(this);
         view.setOnClickListener(v -> { if (portrait() || touch.getVisibility() != View.VISIBLE) menu(); });   /* landscape with the touch pad: top centre only */
         touch = new TouchControls(this);
-        touch.setOnTouchListener((v, ev) -> {
-            /* a tap at the top centre opens the menu; the pad still gets the touch (returns false) */
-            if (ev.getActionMasked() == MotionEvent.ACTION_UP && topCentre(ev, v)) menu();
-            return false;
-        });
+        touch.setOnMenu(this::menu);        /* the pad's MENU button */
         FrameLayout frame = new FrameLayout(this);
         frame.addView(view);
         frame.addView(touch);
         /* every size or turn: the pad goes where the portrait picture leaves room (the whole screen in landscape) */
         frame.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> placeTouch(frame));
+        frame.setOnApplyWindowInsetsListener((v, wi) -> { placeTouch(frame); return v.onApplyWindowInsets(wi); });
         setContentView(frame);
         SharedPreferences prefs = getSharedPreferences(MainActivity.PREFS, MODE_PRIVATE);
         String touchMode = Options.touch(prefs);
         touchAuto = "auto".equals(touchMode);
         touch.setVisibility("off".equals(touchMode) ? View.GONE : View.VISIBLE);
+        if (touchAuto) {
+            /* auto: the controls follow the gamepad, now and as one is plugged in or out */
+            padSync(-1);
+            ((android.hardware.input.InputManager) getSystemService(INPUT_SERVICE)).registerInputDeviceListener(padListener, null);
+        }
         fill = Options.fill(prefs);
         String t = getSharedPreferences(MainActivity.PREFS, MODE_PRIVATE).getString("tree", null);
         tree = t == null ? null : Uri.parse(t);
@@ -270,9 +272,32 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         }
     }
 
+    private final android.hardware.input.InputManager.InputDeviceListener padListener =
+            new android.hardware.input.InputManager.InputDeviceListener() {
+        @Override public void onInputDeviceAdded(int id) { padSync(-1); }
+        @Override public void onInputDeviceChanged(int id) { padSync(-1); }
+        @Override public void onInputDeviceRemoved(int id) { padSync(id); }
+    };
+
+    /** Touch mode "auto": the pad is hidden while a gamepad is connected (ignoring device `gone`), shown when not. */
+    private void padSync(int gone) {
+        if (!touchAuto) return;
+        boolean pad = false;
+        for (int id : InputDevice.getDeviceIds()) {
+            if (id == gone) continue;
+            InputDevice d = InputDevice.getDevice(id);
+            if (d == null || d.isVirtual()) continue;
+            int s = d.getSources();
+            if ((s & InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD
+                    || (s & InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK) pad = true;
+        }
+        touch.setVisibility(pad ? View.GONE : View.VISIBLE);
+    }
+
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        ((android.hardware.input.InputManager) getSystemService(INPUT_SERVICE)).unregisterInputDeviceListener(padListener);
         pauseGame();
         abortClip();
         if (started) {
@@ -341,7 +366,10 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         paint.setFilterBitmap(false);
         SharedPreferences sp = getSharedPreferences(MainActivity.PREFS, MODE_PRIVATE);
         String look = Options.look(sp);
-        boolean grid = "grid".equals(look);
+        boolean lcd = "lcd".equals(look);
+        boolean grid = "grid".equals(look) || lcd;
+        int[] ghost = new int[128 * 128];       /* LCD: the picture as shown last frame, 25% of it stays on */
+        boolean haveGhost = false;
         boolean crt = "crt".equals(look);
         boolean scan = "scanlines".equals(look) || crt;
         if (Options.panelColours(sp)) {
@@ -354,7 +382,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
             paint.setColorFilter(new android.graphics.ColorMatrixColorFilter(cm));
         }
         Paint lines = new Paint();
-        lines.setColor(0x38000000);
+        lines.setColor(lcd ? 0x26000000 : 0x38000000);    /* the LCD's gaps are fainter */
         Paint glow = new Paint();               /* CRT: the picture again, filtered, at 25% over the sharp one */
         glow.setFilterBitmap(true);
         glow.setAlpha(64);
@@ -399,7 +427,24 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
                 }
             }
             was = back;
-            bmp.setPixels(px, 0, 128, 0, 0, 128, 128);
+            int[] shown = px;
+            if (lcd) {
+                /* slight ghosting: this frame 75%, the one shown before 25% (so it fades over a few frames) */
+                if (haveGhost) {
+                    for (int i = 0; i < ghost.length; i++) {
+                        int a = px[i], b = ghost[i];
+                        int r = (((a >> 16) & 255) * 3 + ((b >> 16) & 255)) >> 2;
+                        int g = (((a >> 8) & 255) * 3 + ((b >> 8) & 255)) >> 2;
+                        int bl = ((a & 255) * 3 + (b & 255)) >> 2;
+                        ghost[i] = 0xFF000000 | r << 16 | g << 8 | bl;
+                    }
+                } else {
+                    System.arraycopy(px, 0, ghost, 0, px.length);
+                    haveGhost = true;
+                }
+                shown = ghost;
+            }
+            bmp.setPixels(shown, 0, 128, 0, 0, 128, 128);
             System.arraycopy(px, 0, screen, 0, px.length);
             if (clipOn) clipFrame();
             SurfaceHolder h = holder;
@@ -700,9 +745,14 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     private void placeTouch(FrameLayout frame) {
         int w = frame.getWidth(), h = frame.getHeight();
         int top = portrait() ? pictureSide(w, h) : 0;
+        int bottom = 0;                                  /* portrait: stay above the navigation bar */
+        if (portrait()) {
+            android.view.WindowInsets wi = frame.getRootWindowInsets();
+            if (wi != null) bottom = Math.max(wi.getSystemWindowInsetBottom(), wi.getStableInsetBottom());
+        }
         FrameLayout.LayoutParams old = (FrameLayout.LayoutParams) touch.getLayoutParams();
-        if (old != null && old.topMargin == top && old.height == h - top) return;   /* no change: no new layout */
-        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, h - top);
+        if (old != null && old.topMargin == top && old.height == h - top - bottom) return;   /* no change: no new layout */
+        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, Math.max(1, h - top - bottom));
         lp.topMargin = top;
         touch.setLayoutParams(lp);
     }

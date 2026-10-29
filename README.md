@@ -11,7 +11,7 @@ play as they do on the real board.
   and import, fast-forward, screenshots, button mapping, per-game sound settings.
 - ES-DE support (start games from ES-DE, quit back with M2 + START) and an ES-DE media maker:
   a video, a screenshot and a cover for every game, made on the device.
-- No permissions: the app sees only the folders you choose.
+- One permission, internet, used only by Get games; no storage permission: the app sees only the folders you choose.
 
 No games are included: put your `.CHG` files (and any `.DAT` files they use) in a folder and
 choose it in the app.

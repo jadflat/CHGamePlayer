@@ -80,10 +80,11 @@ final class Options {
         Native.setOption("chgame_volume", v != null ? v : volume(p));
     }
 
-    static final String[] LOOKS = { "sharp", "grid", "scanlines", "crt" };
-    static final String[] LOOK_NAMES = { "Sharp pixels", "LCD grid (thin dark lines between pixels)",
+    static final String[] LOOKS = { "sharp", "grid", "lcd", "scanlines", "crt" };
+    static final String[] LOOK_NAMES = { "Sharp pixels", "Pixel grid (thin dark lines between pixels)",
+            "LCD (a faint pixel grid and slight ghosting, like a handheld's screen)",
             "Scanlines (dark lines between pixel rows)", "CRT (scanlines, a soft glow and darker corners)" };
-    /** sharp or grid: how the game's screen is drawn */
+    /** sharp, grid, lcd, scanlines or crt: how the game's screen is drawn */
     static String look(SharedPreferences p) { return p.getString("look", "sharp"); }
     /** true: the game list as a grid of big cart pictures instead of rows */
     static boolean gridList(SharedPreferences p) { return p.getBoolean("gridList", false); }
@@ -94,6 +95,10 @@ final class Options {
     static final String[] TOUCH_NAMES = { "Automatic: hidden once a gamepad is used", "Always", "Off" };
     /** auto, on or off: the on-screen controls (auto hides them once a gamepad button is pressed) */
     static String touch(SharedPreferences p) { return p.getString("touch", "off"); }
+    /** 20 to 100: how solid the touch controls are */
+    static int touchOpacity(SharedPreferences p) { return Math.max(20, Math.min(100, p.getInt("touchOpacity", 100))); }
+    /** true: a short haptic tick when a touch button goes down */
+    static boolean vibrate(SharedPreferences p) { return p.getBoolean("vibrate", false); }
     /** true: a CHGame-shaped frame beside the picture */
     static boolean bezel(SharedPreferences p) { return p.getBoolean("bezel", false); }
     /** true: the speed overlay (fps, % of real speed and frame time) */

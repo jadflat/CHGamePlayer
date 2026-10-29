@@ -1,0 +1,44 @@
+{
+  "games": [
+    {
+      "name": "STARLIFT",
+      "author": "Jadflat",
+      "description": "A lander rescue game. Fly down, pick up the survivors and get back out.",
+      "licence": "Public repository, jadflat/Starlift",
+      "files": [
+        {
+          "name": "Starlift.CHG",
+          "url": "https://github.com/jadflat/Starlift/releases/download/v0.24/Starlift.CHG"
+        },
+        {
+          "name": "STARLIFT.DAT",
+          "url": "https://github.com/jadflat/Starlift/releases/download/v0.24/STARLIFT.DAT"
+        }
+      ]
+    },
+    {
+      "name": "CHix",
+      "author": "Jadflat",
+      "description": "An original game for the CHGame handheld.",
+      "licence": "Public repository, jadflat/CHix",
+      "files": [
+        {
+          "name": "CHix.CHG",
+          "url": "https://github.com/jadflat/CHix/releases/download/v1.2.3/CHix.CHG"
+        }
+      ]
+    },
+    {
+      "name": "CHarth",
+      "author": "Jadflat",
+      "description": "An original block-shooting puzzle game.",
+      "licence": "MIT",
+      "files": [
+        {
+          "name": "CHarth.CHG",
+          "url": "https://github.com/jadflat/CHarth/releases/download/v1.0/CHarth.CHG"
+        }
+      ]
+    }
+  ]
+}

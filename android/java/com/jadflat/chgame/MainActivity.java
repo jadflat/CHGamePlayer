@@ -50,7 +50,7 @@ import java.util.concurrent.Executors;
  * Options, where everything else lives.
  */
 public class MainActivity extends Activity {
-    static final String VERSION = "0.34";
+    static final String VERSION = "0.35";
     static final String PREFS = "chgame";
 
     private SharedPreferences prefs;
@@ -75,7 +75,7 @@ public class MainActivity extends Activity {
     private int shown = -1;
     private boolean gridMode;                                   /* the list as cells, not rows (Options: Layout) */
     private int gridCols = 2;                                   /* cells in a grid row */
-    private LinearLayout root, left, right;                     /* the panes: list (left), preview (right) */
+    private LinearLayout root, left, right, info, hintRow;                     /* the panes: list (left), preview (right) */
 
     @Override
     protected void onCreate(Bundle saved) {
@@ -179,24 +179,27 @@ public class MainActivity extends Activity {
         art = new ArtView(this, 12);
         art.fill = true;            /* as big as the panel allows, not a whole-number scale */
         right.addView(art, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1));
+        info = new LinearLayout(this);          /* title, author line, port note, hints: below the picture, or beside it in portrait */
+        info.setOrientation(LinearLayout.VERTICAL);
+        info.setGravity(Gravity.CENTER_HORIZONTAL);
         artTitle = Ui.text(this, "", 17, Ui.ON_SURFACE, Ui.pixel(this));
         artTitle.setGravity(Gravity.CENTER);
         artTitle.setMaxLines(2);
         artTitle.setEllipsize(TextUtils.TruncateAt.END);
         artTitle.setLineSpacing(Ui.dp(this, 6), 1f);
         artTitle.setPadding(0, Ui.dp(this, 12), 0, Ui.dp(this, 4));
-        right.addView(artTitle, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
+        info.addView(artTitle, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT));
         artInfo = Ui.text(this, "", 15, Ui.ON_SURFACE_VARIANT, Ui.REGULAR);
         artInfo.setGravity(Gravity.CENTER);
-        right.addView(artInfo);
+        info.addView(artInfo);
         artPort = Ui.text(this, "", 13, Ui.ON_PRIMARY_CONTAINER, Ui.MEDIUM);
         artPort.setBackground(Ui.rounded(this, Ui.PRIMARY_CONTAINER, 8));
         artPort.setPadding(Ui.dp(this, 10), Ui.dp(this, 4), Ui.dp(this, 10), Ui.dp(this, 4));
         LinearLayout.LayoutParams pp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT);
         pp.setMargins(0, Ui.dp(this, 8), 0, 0);
-        right.addView(artPort, pp);
+        info.addView(artPort, pp);
         LinearLayout hints = new LinearLayout(this);
         hints.setOrientation(LinearLayout.HORIZONTAL);
         hints.setGravity(Gravity.CENTER);
@@ -207,7 +210,10 @@ public class MainActivity extends Activity {
             lp.setMargins(Ui.dp(this, 4), 0, Ui.dp(this, 4), 0);
             hints.addView(Ui.chip(this, h[0], h[1]), lp);
         }
-        right.addView(hints);
+        info.addView(hints);
+        hintRow = hints;
+        right.addView(info, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
         applyOrientation();
 
         setContentView(root);
@@ -230,18 +236,40 @@ public class MainActivity extends Activity {
         boolean port = portrait();
         root.setOrientation(port ? LinearLayout.VERTICAL : LinearLayout.HORIZONTAL);
         root.removeAllViews();
-        art.square = port;
+        if (right.getParent() != null) ((android.view.ViewGroup) right.getParent()).removeView(right);
         art.fill = !port;
+        hintRow.setVisibility(port ? View.GONE : View.VISIBLE);
+        right.setOrientation(port ? LinearLayout.HORIZONTAL : LinearLayout.VERTICAL);
+        right.setGravity(port ? Gravity.CENTER_VERTICAL : Gravity.CENTER_HORIZONTAL);
         if (port) {
-            art.setLayoutParams(new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
-                    LinearLayout.LayoutParams.WRAP_CONTENT));
+            /* header on top, then a compact strip (at most ~22% of the height), the list below */
+            int pad = Ui.dp(this, 10);
+            right.setPadding(pad, pad, pad, pad);
+            int side = (int) (getResources().getDisplayMetrics().heightPixels * 0.22f) - 2 * pad;
+            side = side >= 256 ? side / 128 * 128 : Math.max(side, 96);     /* whole-number scale if it fits */
+            art.setLayoutParams(new LinearLayout.LayoutParams(side, side));
+            info.setGravity(Gravity.CENTER_VERTICAL);
+            right.removeView(info);
+            LinearLayout.LayoutParams ip = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1);
+            ip.setMargins(Ui.dp(this, 14), 0, 0, 0);
+            right.addView(info, ip);
+            artTitle.setGravity(Gravity.START);
+            artInfo.setGravity(Gravity.START);
             LinearLayout.LayoutParams rp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT);
-            rp.setMargins(0, 0, 0, Ui.dp(this, 20));
-            root.addView(right, rp);
-            root.addView(left, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1));
+            rp.setMargins(0, 0, 0, Ui.dp(this, 12));
+            left.addView(right, 1, rp);
+            root.addView(left, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.MATCH_PARENT));
         } else {
+            right.setPadding(Ui.dp(this, 16), Ui.dp(this, 16), Ui.dp(this, 16), Ui.dp(this, 14));
             art.setLayoutParams(new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1));
+            info.setGravity(Gravity.CENTER_HORIZONTAL);
+            right.removeView(info);
+            right.addView(info, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT));
+            artTitle.setGravity(Gravity.CENTER);
+            artInfo.setGravity(Gravity.CENTER);
             root.addView(left, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1.15f));
             LinearLayout.LayoutParams rp = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1);
             rp.setMargins(Ui.dp(this, 20), 0, 0, 0);
@@ -273,6 +301,17 @@ public class MainActivity extends Activity {
         b.setClickable(true);
         b.setOnClickListener(v -> startActivity(new Intent(this, OptionsActivity.class).putExtra("pickOnly", true)));
         e.addView(b);
+        TextView g = Ui.text(this, "Get games", 16, Ui.PRIMARY, Ui.MEDIUM);
+        g.setGravity(Gravity.CENTER);
+        g.setPadding(Ui.dp(this, 28), Ui.dp(this, 12), Ui.dp(this, 28), Ui.dp(this, 12));
+        g.setBackground(Ui.card(this, android.graphics.Color.TRANSPARENT, 24));
+        g.setFocusable(true);
+        g.setClickable(true);
+        g.setOnClickListener(v -> startActivity(new Intent(this, CatalogueActivity.class)));
+        LinearLayout.LayoutParams gp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        gp.topMargin = Ui.dp(this, 12);
+        e.addView(g, gp);
         e.setVisibility(View.GONE);
         return e;
     }
@@ -1142,7 +1181,6 @@ public class MainActivity extends Activity {
      *  that fits, or with fill as big as fits. */
     static final class ArtView extends View {
         boolean fill;
-        boolean square;             /* as tall as wide (portrait's preview) */
         private Bitmap bmp;
         private final Paint paint = new Paint();
         private final Rect src = new Rect(0, 0, 128, 128), dst = new Rect();
@@ -1165,17 +1203,6 @@ public class MainActivity extends Activity {
             if (b == bmp) return;
             bmp = b;
             invalidate();
-        }
-
-        @Override
-        protected void onMeasure(int wSpec, int hSpec) {
-            if (!square) {
-                super.onMeasure(wSpec, hSpec);
-                return;
-            }
-            int w = View.MeasureSpec.getSize(wSpec);
-            int cap = getRootView().getHeight() * 2 / 5;     /* a short portrait screen keeps room for the list */
-            setMeasuredDimension(w, cap >= 128 ? Math.min(w, cap) : w);
         }
 
         @Override
