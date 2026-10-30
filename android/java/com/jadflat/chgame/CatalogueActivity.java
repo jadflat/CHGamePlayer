@@ -47,6 +47,7 @@ public class CatalogueActivity extends Page {
 
     private SharedPreferences prefs;
     private List<Item> items = new ArrayList<>();
+    private List<String[]> sources = new ArrayList<>();   /* {developer, owner/repo}: read live from GitHub releases */
     private List<Item> bundled = new ArrayList<>();      /* games inside this APK (private build only) */
     private Set<String> have = new HashSet<>();          /* upper-case names in the games folder */
     private final Map<String, Files.Entry> haveKey = new HashMap<>();   /* title+author of each .CHG there */
@@ -62,7 +63,9 @@ public class CatalogueActivity extends Page {
         super.onCreate(saved);
         prefs = getSharedPreferences(MainActivity.PREFS, MODE_PRIVATE);
         try (InputStream in = getAssets().open("catalogue.json")) {
-            items = parse(readAll(in, 1 << 20));
+            String txt = readAll(in, 1 << 20);
+            items = parse(txt);
+            sources = parseSources(txt);
             readHeaders(items);
         } catch (Exception e) {
             /* no bundled list: the page shows none */
@@ -343,28 +346,106 @@ public class CatalogueActivity extends Page {
         return out;
     }
 
-    /** The newer list from the project, if it can be had; otherwise nothing changes. */
+    /** "sources": [{"developer": "Name", "repo": "owner/repo"}]: developers whose releases are read directly. */
+    private static List<String[]> parseSources(String json) {
+        List<String[]> out = new ArrayList<>();
+        try {
+            JSONArray a = new JSONObject(json).optJSONArray("sources");
+            for (int i = 0; a != null && i < a.length() && out.size() < 40; i++) {
+                JSONObject o = a.getJSONObject(i);
+                String repo = o.optString("repo", "");
+                if (!repo.matches("[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}")) continue;
+                out.add(new String[] { o.optString("developer", repo.substring(0, repo.indexOf('/'))), repo });
+            }
+        } catch (Exception e) {
+            /* no sources */
+        }
+        return out;
+    }
+
+    /** One developer's newest release as a game: its .CHG and .DAT files, straight from the source. */
+    private static Item fromRelease(String developer, String repo) throws Exception {
+        HttpURLConnection c = open("https://api.github.com/repos/" + repo + "/releases/latest");
+        String txt;
+        try (InputStream in = c.getInputStream()) {
+            txt = readAll(in, 1 << 20);
+        } finally {
+            c.disconnect();
+        }
+        JSONObject r = new JSONObject(txt);
+        Item it = new Item();
+        it.name = repo.substring(repo.indexOf('/') + 1);
+        it.author = developer;
+        it.developer = developer;
+        it.description = "";
+        it.licence = "Public repository, " + repo;
+        it.group = "";
+        String tag = r.optString("tag_name", "");
+        it.version = tag.startsWith("v") ? tag.substring(1) : tag;
+        JSONArray assets = r.optJSONArray("assets");
+        for (int i = 0; assets != null && i < assets.length(); i++) {
+            JSONObject a = assets.getJSONObject(i);
+            String n = Files.safeName(a.optString("name", "")), u = a.optString("browser_download_url", "");
+            if (n == null || !u.startsWith("https://github.com/" + repo + "/releases/download/")) continue;
+            String l = n.toLowerCase(Locale.ROOT);
+            if (l.endsWith(".chg") || l.endsWith(".dat")) it.files.add(new String[] { n, u, "" });
+        }
+        boolean hasGame = false;
+        for (String[] f : it.files) if (f[0].toLowerCase(Locale.ROOT).endsWith(".chg")) hasGame = true;
+        return hasGame ? it : null;
+    }
+
+    /** The newer list from the project, then each developer's own releases; whatever fails changes nothing. */
     private void refreshRemote() {
         new Thread(() -> {
+            List<Item> base = null;
+            List<String[]> srcs = sources;
             try {
                 HttpURLConnection c = open(REMOTE);
                 try (InputStream in = c.getInputStream()) {
-                    List<Item> got = parse(readAll(in, 1 << 20));
-                    if (got.isEmpty()) return;
-                    runOnUiThread(() -> {
-                        if (isFinishing() || busy) return;
-                        readHeaders(got);
-                        items = new ArrayList<>(got);
-                        items.addAll(bundled);
-                        build();
-                    });
+                    String txt = readAll(in, 1 << 20);
+                    List<Item> got = parse(txt);
+                    if (!got.isEmpty()) {
+                        base = got;
+                        List<String[]> s2 = parseSources(txt);
+                        if (!s2.isEmpty()) srcs = s2;
+                    }
                 } finally {
                     c.disconnect();
                 }
             } catch (Exception e) {
                 /* no network, or no list there: the bundled one stays */
             }
+            if (base != null) showList(base);
+            List<Item> live = new ArrayList<>();
+            for (String[] s : srcs) {
+                try {
+                    Item it = fromRelease(s[0], s[1]);
+                    if (it != null) live.add(it);
+                } catch (Exception e) {
+                    /* this developer is unreachable: their listed games stay */
+                }
+            }
+            if (live.isEmpty()) return;
+            List<Item> merged = new ArrayList<>();
+            for (Item old : base != null ? base : items) {
+                boolean replaced = false;
+                for (Item l : live) if (l.name.equalsIgnoreCase(old.name)) replaced = true;
+                if (!replaced && !bundled.contains(old)) merged.add(old);
+            }
+            merged.addAll(live);
+            showList(merged);
         }, "catalogue-list").start();
+    }
+
+    private void showList(List<Item> list) {
+        runOnUiThread(() -> {
+            if (isFinishing() || busy) return;
+            readHeaders(list);
+            items = new ArrayList<>(list);
+            items.addAll(bundled);
+            build();
+        });
     }
 
     /* ---------------------------------------------------------------- */

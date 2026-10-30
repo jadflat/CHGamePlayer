@@ -1,4 +1,14 @@
 {
+  "sources": [
+    {
+      "developer": "Jadflat",
+      "repo": "jadflat/Starlift"
+    },
+    {
+      "developer": "Jadflat",
+      "repo": "jadflat/CHix"
+    }
+  ],
   "games": [
     {
       "name": "STARLIFT",
