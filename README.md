@@ -18,6 +18,21 @@ choose it in the app.
 
 An illustrated how-to with screenshots: [docs/HOW-TO.md](docs/HOW-TO.md).
 
+## Screenshots
+
+<table>
+  <tr>
+    <td align="center"><img src="docs/howto/01-list.png" width="320" alt="The game list, with cartridge pictures and sections"><br><sub>Game list</sub></td>
+    <td align="center"><img src="docs/howto/06-game.png" width="320" alt="A CHGame game running on the device"><br><sub>A game running</sub></td>
+    <td align="center"><img src="docs/howto/08-menu.png" width="320" alt="The in-game menu over a running game"><br><sub>In-game menu</sub></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="docs/howto/09-load.png" width="320" alt="The load state screen with the save slots"><br><sub>Load state</sub></td>
+    <td align="center"><img src="docs/howto/02-options.png" width="320" alt="The options screen"><br><sub>Options</sub></td>
+    <td align="center"><img src="docs/howto/10-about.png" width="320" alt="The about screen for a game, with its credits"><br><sub>About this game</sub></td>
+  </tr>
+</table>
+
 **Download:** the APK is on the [releases page](../../releases). Setup, ES-DE and every option:
 [docs/GUIDE.md](docs/GUIDE.md).
 
