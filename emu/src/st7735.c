@@ -297,6 +297,8 @@ void st7735_render(const ChgSt7735 *lcd, uint32_t out[128 * 128])
        panel's are blue-green-red: the switch is in the source driver, so it
        swaps what is already in memory too (chg_lcdtest step 3) */
     const bool swap = !(lcd->madctl & MAD_BGR);
+    uint32_t lut[64];
+    for (int i = 0; i < 64; i++) lut[i] = c8(i);
     /* Screen pixel (x, y) is frame memory column 129-x on panel line 128-y:
        with MADCTL 0xC8 that is window column x+2, row y+3, which is where
        CHGfx and the games put the picture */
@@ -307,9 +309,18 @@ void st7735_render(const ChgSt7735 *lcd, uint32_t out[128 * 128])
             for (int x = 0; x < 128; x++) dst[x] = blank;
             continue;
         }
-        const uint32_t *src = lcd->gram[row];
+        const uint32_t *src = lcd->gram[row] + 129;
+        if (!lcd->inverted && !lcd->idle) {
+            for (int x = 0; x < 128; x++) {
+                const uint32_t v = src[-x];
+                const uint32_t r = v >> 12, g = (v >> 6) & 63, b = v & 63;
+                const uint32_t R = swap ? b : r, B = swap ? r : b;
+                dst[x] = lut[R] << 16 | lut[g] << 8 | lut[B];
+            }
+            continue;
+        }
         for (int x = 0; x < 128; x++) {
-            uint32_t v = src[129 - x];
+            uint32_t v = src[-x];
             if (lcd->inverted)
                 v ^= 0x3ffff;
             /* idle: eight colours from the top bit of each (10.1.32) */

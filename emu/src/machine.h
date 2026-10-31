@@ -45,6 +45,23 @@ typedef struct {
     uint16_t wend;      /* the 32-bit word its last byte is in (flash: what must be fetched) */
 } ChgInsn;
 
+/* decoded operations */
+enum {
+    OP_NONE = 0,
+    OP_LUI, OP_AUIPC, OP_JAL, OP_JALR,
+    OP_BEQ, OP_BNE, OP_BLT, OP_BGE, OP_BLTU, OP_BGEU,
+    OP_LB, OP_LH, OP_LW, OP_LBU, OP_LHU,
+    OP_SB, OP_SH, OP_SW,
+    OP_ADDI, OP_SLTI, OP_SLTIU, OP_XORI, OP_ORI, OP_ANDI, OP_SLLI, OP_SRLI, OP_SRAI,
+    OP_ADD, OP_SUB, OP_SLL, OP_SLT, OP_SLTU, OP_XOR, OP_SRL, OP_SRA, OP_OR, OP_AND,
+    OP_MUL, OP_MULH, OP_MULHSU, OP_MULHU, OP_DIV, OP_DIVU, OP_REM, OP_REMU,
+    OP_LR, OP_SC, OP_AMOSWAP, OP_AMOADD, OP_AMOXOR, OP_AMOAND, OP_AMOOR,
+    OP_AMOMIN, OP_AMOMAX, OP_AMOMINU, OP_AMOMAXU,
+    OP_FENCE, OP_ECALL, OP_EBREAK, OP_MRET, OP_WFI,
+    OP_CSRRW, OP_CSRRS, OP_CSRRC, OP_CSRRWI, OP_CSRRSI, OP_CSRRCI,
+    OP_ILLEGAL,
+};
+
 #define CHG_HPE_DEPTH 8
 
 typedef struct {
@@ -298,6 +315,13 @@ void     chg_run(ChgMachine *m, uint64_t until);
 void     chg_set_buttons(ChgMachine *m, uint8_t buttons);
 void     chg_schedule(ChgMachine *m);
 static inline void chg_kick(ChgMachine *m) { m->stop_at = 0; }
+/* a peripheral write that can only have moved the next event: look at it again, but
+   keep running unless the slice now ends sooner */
+static inline void chg_resched(ChgMachine *m)
+{
+    chg_schedule(m);
+    if (m->stop_at > m->next_event) m->stop_at = m->next_event;
+}
 
 /* rv32.c */
 void     cpu_reset(ChgMachine *m);
@@ -309,6 +333,28 @@ bool     cpu_irq_waiting(ChgMachine *m);
 void     cpu_invalidate_flash(ChgMachine *m, uint32_t addr, uint32_t len);
 int      cpu_decode(uint32_t pc, uint32_t raw, ChgInsn *d, bool in_flash);
 const char *cpu_op_name(int op);
+void     cpu_invalidate_ram(ChgMachine *m, uint32_t off, int size);
+
+/* jit_a64.c: an aarch64 translator for flash code (see there). Off the
+   aarch64 build it does not exist and the interpreter is all there is. */
+#ifdef CHG_JIT
+extern int chg_jit;                                 /* the core option */
+extern uint8_t chg_jit_ramcode[CHG_RAM_SIZE / 32 + 2];  /* 32-byte lines that held decoded RAM code */
+extern int chg_jit_div_pending, chg_jit_div_on;   /* a divide was decoded: blocks need the divider's timing */
+extern uint8_t chg_jit_bad[0x8000];       /* pcs (>>1) the translator cannot start a block at */
+void     jit_flush(void);
+void     jit_machine_replaced(ChgMachine *m);   /* a save state was loaded over it */
+int      jit_run(ChgMachine *m, int rst);       /* rst: recent_data | pair_open << 3; chg_jit_rst comes back */
+void     jit_ram_stored(uint32_t off, int size);   /* RAM that translated code came from was written */
+extern int chg_jit_rst;
+extern uint8_t chg_jit_bad_ram[CHG_RAM_SIZE / 2];
+static inline void jit_mark_ram(uint32_t off)
+{
+    uint32_t a = off >= 3 ? (off - 3) >> 5 : 0, b = (off + 3) >> 5;
+    chg_jit_ramcode[a] |= 1;
+    chg_jit_ramcode[b] |= 1;
+}
+#endif
 
 /* bus.c */
 uint32_t bus_read_slow(ChgMachine *m, uint32_t addr, int size, int *wait);

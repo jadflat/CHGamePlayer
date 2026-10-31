@@ -31,15 +31,29 @@ void chg_audio_init(ChgAudio *a, int rate, uint64_t now)
     a->state.cycle = now;
 }
 
+/* the PWM's active time up to t (cumulative, from the origin) */
+static inline double pwm_cum(const ChgBuzzState *s, double t)
+{
+    const double P = s->period, H = s->high, d = t - (double)s->origin;
+    const double k = floor(d / P);
+    return k * H + fmin(d - P * k, H);
+}
+
+/* F(t0) of the sample that follows is F(t1) of this one while the state holds */
+static double  cum_t, cum_v;
+static bool    cum_ok;
+static double  cum_P, cum_H;
+static uint64_t cum_o;
+
 /* how long the pin spends at level 1 in [t0, t1) under state s */
 static double high_time(const ChgBuzzState *s, double t0, double t1)
 {
     if (!s->pwm)
         return s->level ? t1 - t0 : 0.0;
-    const double P = s->period, H = s->high, o = (double)s->origin;
-#define F(t) (floor(((t) - o) / P) * H + fmin(((t) - o) - P * floor(((t) - o) / P), H))
-    const double activeTime = F(t1) - F(t0);
-#undef F
+    const double f1 = pwm_cum(s, t1);
+    const double f0 = (cum_ok && cum_t == t0 && cum_P == s->period && cum_H == s->high && cum_o == (uint64_t)s->origin) ? cum_v : pwm_cum(s, t0);
+    cum_t = t1; cum_v = f1; cum_ok = true; cum_P = s->period; cum_H = s->high; cum_o = (uint64_t)s->origin;
+    const double activeTime = f1 - f0;
     return s->level ? activeTime : (t1 - t0) - activeTime;
 }
 
@@ -57,7 +71,7 @@ int chg_audio_render(ChgAudio *a, ChgMachine *m, float *out, int max)
             const double at = (double)next->cycle > t ? (double)next->cycle : t;
             high += high_time(&a->state, t, at);
             t = at;
-            a->state = *next;
+            a->state = *next; cum_ok = false;
             b->tail = (b->tail + 1) % CHG_BUZZ_LOG;
         }
         high += high_time(&a->state, t, t1);
@@ -90,7 +104,7 @@ void chg_audio_skip(ChgAudio *a, ChgMachine *m)
     /* throws away what was logged without playing it, e.g. while fast forwarding */
     ChgBuzzer *b = &m->buzzer;
     while (b->tail != b->head) {
-        a->state = b->log[b->tail];
+        a->state = b->log[b->tail]; cum_ok = false;
         b->tail = (b->tail + 1) % CHG_BUZZ_LOG;
     }
     a->pos = (double)m->cycles;

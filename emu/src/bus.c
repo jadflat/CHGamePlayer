@@ -110,18 +110,26 @@ static void pfic_write(ChgMachine *m, uint32_t off, uint32_t v, int size)
 
 static uint64_t stk_div(ChgMachine *m) { return (m->systick.ctlr & STK_STCLK) ? 1 : 8; }
 
+/* x % period, without the divide when x is close (a program reads the counter in a loop) */
+static inline uint64_t mod_near(uint64_t x, uint64_t period)
+{
+    if (x < period) return x;
+    if (x - period < period) return x - period;
+    return x % period;
+}
+
 /* the counter as it is at 'now' */
 static uint64_t stk_count(ChgMachine *m, uint64_t now)
 {
     ChgSysTick *s = &m->systick;
     if (!(s->ctlr & STK_STE))
         return s->cnt_base;
-    const uint64_t ticks = (now - s->cycle_base) / stk_div(m);
+    const uint64_t ticks = (s->ctlr & STK_STCLK) ? now - s->cycle_base : (now - s->cycle_base) >> 3;
     if (s->ctlr & STK_MODE) {
         /* down */
         if (s->ctlr & STK_STRE) {
             const uint64_t period = s->cmp + 1;
-            const uint64_t done = (s->cmp - s->cnt_base + ticks) % period;
+            const uint64_t done = mod_near(s->cmp - s->cnt_base + ticks, period);
             return s->cmp - done;
         }
         return s->cnt_base - ticks;
@@ -133,7 +141,7 @@ static uint64_t stk_count(ChgMachine *m, uint64_t now)
                is for practical purposes never */
             return s->cnt_base + ticks;
         }
-        return (s->cnt_base + ticks) % period;
+        return mod_near(s->cnt_base + ticks, period);
     }
     return s->cnt_base + ticks;
 }
@@ -255,7 +263,10 @@ static bool af_level(ChgMachine *m, int port, int pin)
     return false;
 }
 
+static inline bool gpio_pin_i(ChgMachine *m, int port, int pin);
 bool gpio_pin(ChgMachine *m, int port, int pin)
+{ return gpio_pin_i(m, port, pin); }
+static inline __attribute__((always_inline)) bool gpio_pin_i(ChgMachine *m, int port, int pin)
 {
     const ChgGpioPort *g = &m->gpio[port];
     const unsigned cfg = pin_cfg(m, port, pin);
@@ -379,8 +390,8 @@ static uint8_t rev8(uint8_t b)
 static void spi_deliver(ChgMachine *m, uint16_t frame)
 {
     /* the display listens while its CS (PA4) is low and it is not in reset */
-    if (!gpio_pin(m, 0, 4) && m->lcd.rst_level) {
-        const bool dc = gpio_pin(m, 1, 0);
+    if (!gpio_pin_i(m, 0, 4) && m->lcd.rst_level) {
+        const bool dc = gpio_pin_i(m, 1, 0);
         if (m->spi.ctlr1 & SPI_DFF) {
             uint8_t hi = (uint8_t)(frame >> 8), lo = (uint8_t)frame;
             if (m->spi.ctlr1 & SPI_LSB) { uint8_t t = rev8(lo); lo = rev8(hi); hi = t; }
@@ -396,7 +407,7 @@ static void spi_deliver(ChgMachine *m, uint16_t frame)
        MISO floats high (the display never answers). A card that sees CS go
        high drops what it was saying. */
     uint16_t miso = (m->spi.ctlr1 & SPI_DFF) ? 0xffff : 0xff;
-    const bool sd_sel = !gpio_pin(m, 1, 11);
+    const bool sd_sel = !gpio_pin_i(m, 1, 11);
     if (sd_sel) {
         if (m->spi.ctlr1 & SPI_DFF) {
             const uint8_t hi = sdspi_xfer(&m->sdspi, m->sd, (uint8_t)(frame >> 8));
@@ -435,14 +446,16 @@ static uint32_t dma_mem_read(ChgMachine *m, uint32_t addr, int size)
     int wait = 0;
     uint32_t off = addr - CHG_RAM_BASE;
     if (off <= CHG_RAM_SIZE - (uint32_t)size) {
-        uint32_t v = 0;
-        memcpy(&v, m->ram + off, (size_t)size);
-        return v;
+        const uint8_t *p = m->ram + off;
+        if (size == 2) { uint16_t v; memcpy(&v, p, 2); return v; }
+        if (size == 4) { uint32_t v; memcpy(&v, p, 4); return v; }
+        return *p;
     }
     if (addr <= CHG_FLASH_SIZE - (uint32_t)size) {
-        uint32_t v = 0;
-        memcpy(&v, m->flash + addr, (size_t)size);
-        return v;
+        const uint8_t *p = m->flash + addr;
+        if (size == 2) { uint16_t v; memcpy(&v, p, 2); return v; }
+        if (size == 4) { uint32_t v; memcpy(&v, p, 4); return v; }
+        return *p;
     }
     return bus_read_slow(m, addr, size, &wait);
 }
@@ -533,12 +546,27 @@ static uint64_t spi_next_event(ChgMachine *m)
     const ChgSpi *s = &m->spi;
     if (!(s->ctlr1 & SPI_SPE) || !s->shifting)
         return UINT64_MAX;
-    for (int ch = 1; ch <= 2; ch++)
-        if (dma_ready(m, ch) && (m->dma.ch[ch].cfgr & (DMA_TCIE | DMA_HTIE)))
-            return s->shift_end;
     if (s->ctlr2 & (SPI_TXEIE | SPI_RXNEIE))
         return s->shift_end;
-    return UINT64_MAX;
+    /* A running DMA transfer with an interrupt enabled needs the CPU stopped when
+       its half or full flag is due, not at every byte before it: that is a slice
+       a byte. The flag of the k-th byte from now cannot come before the byte
+       k-1 frames on (a receive) or k-2 frames on (a transmit take), so stop
+       there and look again; the last two bytes get the stop they always had. */
+    uint64_t at = UINT64_MAX;
+    for (int ch = 1; ch <= 2; ch++) {
+        const ChgDmaChannel *c = &m->dma.ch[ch];
+        if (!dma_ready(m, ch) || !(c->cfgr & (DMA_TCIE | DMA_HTIE)))
+            continue;
+        uint32_t k = c->cntr;                                   /* bytes to the full flag */
+        const uint32_t half = c->count_reload / 2;
+        if ((c->cfgr & DMA_HTIE) && c->cntr > half)
+            k = c->cntr - half;                                 /* ...or the half flag */
+        uint64_t e = s->shift_end;
+        if (k > 2) e += (uint64_t)(k - 2) * spi_frame_cycles(m);
+        if (e < at) at = e;
+    }
+    return at;
 }
 
 static uint32_t spi_read(ChgMachine *m, uint32_t off)
@@ -591,7 +619,7 @@ static void spi_write(ChgMachine *m, uint32_t off, uint32_t v)
     case 0x1c: s->hscr = (uint16_t)v; break;
     }
     spi_sync(m, m->cycles);
-    chg_kick(m);
+    chg_resched(m);
 }
 
 /* Memory to memory transfers happen at once */
@@ -669,7 +697,7 @@ static void dma_write(ChgMachine *m, uint32_t off, uint32_t v)
         }
     }
     spi_sync(m, m->cycles);
-    chg_kick(m);
+    chg_resched(m);
 }
 
 /* ------------------------------------------------------------------------ */
@@ -790,7 +818,7 @@ static void tim_write(ChgMachine *m, int n, uint32_t off, uint32_t v)
     tim_plan(m, n);
     if (n == 0)
         buzzer_update(m);
-    chg_kick(m);
+    chg_resched(m);
 }
 
 /* ------------------------------------------------------------------------ */
@@ -1027,13 +1055,14 @@ uint32_t bus_read_slow(ChgMachine *m, uint32_t addr, int size, int *wait)
     const uint32_t shift = (addr & 3) * 8;
 
     /* misaligned accesses to memory are split into bytes */
-    if ((addr & (uint32_t)(size - 1)) && addr < 0x40000000u) {
+    if (addr < 0x40000000u && (addr & (uint32_t)(size - 1))) {
         uint32_t v = 0;
         for (int i = 0; i < size; i++)
             v |= bus_read_slow(m, addr + (uint32_t)i, 1, wait) << (8 * i);
         return v;
     }
 
+    if (addr >= 0x40000000u) goto periph;
     if (addr < CHG_FLASH_SIZE || (addr >= CHG_FLASH_ALIAS && addr < CHG_FLASH_ALIAS + CHG_FLASH_SIZE)) {
         const uint32_t a = addr & 0xffff;
         uint32_t v = 0;
@@ -1047,6 +1076,7 @@ uint32_t bus_read_slow(ChgMachine *m, uint32_t addr, int size, int *wait)
         return v;
     }
 
+periph:
     *wait += PERIPH_WS;
     const uint32_t word = addr & ~3u;
     uint32_t v;
@@ -1108,19 +1138,17 @@ uint32_t bus_read_slow(ChgMachine *m, uint32_t addr, int size, int *wait)
 
 void bus_write_slow(ChgMachine *m, uint32_t addr, uint32_t value, int size, int *wait)
 {
-    if ((addr & (uint32_t)(size - 1)) && addr < 0x40000000u) {
+    if (addr < 0x40000000u && (addr & (uint32_t)(size - 1))) {
         for (int i = 0; i < size; i++)
             bus_write_slow(m, addr + (uint32_t)i, value >> (8 * i), 1, wait);
         return;
     }
+    if (addr >= 0x40000000u) goto periph;
     if (addr - CHG_RAM_BASE < CHG_RAM_SIZE) {
         const uint32_t off = addr - CHG_RAM_BASE;
         const size_t n = off + (uint32_t)size <= CHG_RAM_SIZE ? (size_t)size : 1;
         memcpy(m->ram + off, &value, n);
-        uint32_t first = off >> 1;
-        if (first) first--;
-        for (uint32_t i = first; i <= (off + (uint32_t)n - 1) >> 1 && i < CHG_RAM_SIZE / 2; i++)
-            m->dc_ram[i].op = 0;
+        cpu_invalidate_ram(m, off, (int)n);
         return;
     }
     if (addr < CHG_FLASH_SIZE || (addr >= CHG_FLASH_ALIAS && addr < CHG_FLASH_ALIAS + CHG_FLASH_SIZE)) {
@@ -1128,6 +1156,7 @@ void bus_write_slow(ChgMachine *m, uint32_t addr, uint32_t value, int size, int 
         return;
     }
 
+periph:
     *wait += PERIPH_WS;
     const uint32_t shift = (addr & 3) * 8;
     const uint32_t word = addr & ~3u;

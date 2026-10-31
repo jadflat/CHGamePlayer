@@ -134,6 +134,9 @@ static const struct retro_variable vars[] = {
     { "chgame_dat_all", "Data files put on the card (on load); Off|All .DAT in folder" },
     { "chgame_cpu",    "CPU speed (frame rate unchanged); 100%|150%|200%|300%" },
     { "chgame_speed_osd", "CPU load display (busy %, top right); Off|On" },
+#ifdef CHG_JIT
+    { "chgame_jit",    "JIT recompiler (aarch64; same result as the interpreter, faster); On|Off" },
+#endif
     { "chgame_colour", "Colour; Raw|LCD" },
     { "chgame_scale",  "Internal upscale (nearest); 1x|2x|3x|4x|5x|6x" },
     { NULL, NULL },
@@ -165,6 +168,9 @@ static void apply_options(void)
     soft_clip = nchain > 0 || audio.volume > 1.0f;
     const int cpu = atoi(opt("chgame_cpu"));
     chg_cpu_pct = (cpu >= 100 && cpu <= 300) ? cpu : 100;
+#ifdef CHG_JIT
+    chg_jit = strcmp(opt("chgame_jit"), "Off") != 0;
+#endif
     load_osd = !strcmp(opt("chgame_speed_osd"), "On");
     lcd_colour = !strcmp(opt("chgame_colour"), "LCD");
     dat_all = opt("chgame_dat_all")[0] == 'A';
@@ -595,6 +601,10 @@ RETRO_API void chgame_flush(void)
 /* Not part of libretro: true once the game has the panel on and has drawn a
    whole frame. Before that the panel shows white (as the real one does at
    power-on), which the app's preview keeps off the screen */
+RETRO_API unsigned chgame_pc(void) { return m.cpu.pc; }
+
+RETRO_API unsigned long long chgame_instret(void) { return m.instret; }
+
 RETRO_API bool chgame_screen_ready(void)
 {
     return loaded && m.lcd.display_on && !m.lcd.sleeping && m.lcd.rst_level && m.lcd.frames_written > 0;
@@ -790,6 +800,9 @@ RETRO_API bool retro_unserialize(const void *data, size_t size)
     memcpy(&m, sm, sizeof m);
     memcpy(&audio, sa, sizeof audio);
     m.sd = sd;
+#ifdef CHG_JIT
+    jit_machine_replaced(&m);
+#endif
     audio.volume = volume;
     audio.piezo = piezo;
     return true;
@@ -807,3 +820,4 @@ RETRO_API size_t retro_get_memory_size(unsigned id)
 {
     return id == RETRO_MEMORY_SYSTEM_RAM ? CHG_RAM_SIZE : 0;
 }
+

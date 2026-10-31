@@ -56,21 +56,6 @@
    numbering; a jump always restarts the prefetcher, so that is harmless */
 #define WIDX(a) ((uint32_t)(((a) & 0xffffu) >> 2))
 
-enum {
-    OP_NONE = 0,
-    OP_LUI, OP_AUIPC, OP_JAL, OP_JALR,
-    OP_BEQ, OP_BNE, OP_BLT, OP_BGE, OP_BLTU, OP_BGEU,
-    OP_LB, OP_LH, OP_LW, OP_LBU, OP_LHU,
-    OP_SB, OP_SH, OP_SW,
-    OP_ADDI, OP_SLTI, OP_SLTIU, OP_XORI, OP_ORI, OP_ANDI, OP_SLLI, OP_SRLI, OP_SRAI,
-    OP_ADD, OP_SUB, OP_SLL, OP_SLT, OP_SLTU, OP_XOR, OP_SRL, OP_SRA, OP_OR, OP_AND,
-    OP_MUL, OP_MULH, OP_MULHSU, OP_MULHU, OP_DIV, OP_DIVU, OP_REM, OP_REMU,
-    OP_LR, OP_SC, OP_AMOSWAP, OP_AMOADD, OP_AMOXOR, OP_AMOAND, OP_AMOOR,
-    OP_AMOMIN, OP_AMOMAX, OP_AMOMINU, OP_AMOMAXU,
-    OP_FENCE, OP_ECALL, OP_EBREAK, OP_MRET, OP_WFI,
-    OP_CSRRW, OP_CSRRS, OP_CSRRC, OP_CSRRWI, OP_CSRRSI, OP_CSRRCI,
-    OP_ILLEGAL,
-};
 
 const char *cpu_op_name(int op)
 {
@@ -393,6 +378,9 @@ int cpu_decode(uint32_t pc, uint32_t raw, ChgInsn *d, bool in_flash)
         break;
     }
     d->cost = (uint8_t)cost;
+#ifdef CHG_JIT
+    if (d->op >= OP_DIV && d->op <= OP_REMU && !chg_jit_div_on) chg_jit_div_pending = 1;
+#endif
     d->wend = (uint16_t)(((pc & 0xffff) + d->len - 1) >> 2);
     return d->len;
 }
@@ -410,10 +398,22 @@ static inline void ram_invalidate(ChgMachine *m, uint32_t off, int size)
     if (first) first--;
     for (uint32_t i = first; i <= last && i < CHG_RAM_SIZE / 2; i++)
         m->dc_ram[i].op = OP_NONE;
+#ifdef CHG_JIT
+    /* code translated from RAM must not outlive its source */
+    if (chg_jit_ramcode[off >> 5] & 2) jit_ram_stored(off, size);
+#endif
+}
+
+void cpu_invalidate_ram(ChgMachine *m, uint32_t off, int size)
+{
+    ram_invalidate(m, off, size);
 }
 
 void cpu_invalidate_flash(ChgMachine *m, uint32_t addr, uint32_t len)
 {
+#ifdef CHG_JIT
+    jit_flush();
+#endif
     uint32_t first = addr >> 1, last = (addr + len - 1) >> 1;
     if (first) first--;
     for (uint32_t i = first; i <= last && i < CHG_FLASH_SIZE / 2; i++)
@@ -426,9 +426,10 @@ void cpu_invalidate_flash(ChgMachine *m, uint32_t addr, uint32_t len)
 #define WAIT_RAM_STORE  0x20000
 #define WAIT_RAM_LOAD   0x40000
 #define WAIT_LOAD       0x80000     /* any load at all */
+#define WAIT_SLOW       0x100000    /* went through the slow bus path: m->cycles/stop_at may have changed */
 #define WAIT_CYCLES     0x0ffff
 
-static inline uint32_t load(ChgMachine *m, uint32_t addr, int size, int *wait)
+static inline uint32_t load(ChgMachine *m, uint32_t addr, int size, int *wait, uint64_t *cyc)
 {
     uint32_t off = addr - CHG_RAM_BASE;
     if (off <= CHG_RAM_SIZE - (uint32_t)size) {
@@ -445,11 +446,14 @@ static inline uint32_t load(ChgMachine *m, uint32_t addr, int size, int *wait)
         if (size == 2) { uint16_t v; memcpy(&v, p, 2); return v; }
         return *p;
     }
-    *wait |= WAIT_LOAD;
-    return bus_read_slow(m, addr, size, wait);
+    *wait |= WAIT_LOAD | WAIT_SLOW;
+    m->cycles = *cyc;
+    const uint32_t v = bus_read_slow(m, addr, size, wait);
+    *cyc = m->cycles;
+    return v;
 }
 
-static inline void store(ChgMachine *m, uint32_t addr, uint32_t v, int size, int *wait)
+static inline void store(ChgMachine *m, uint32_t addr, uint32_t v, int size, int *wait, uint64_t *cyc)
 {
     uint32_t off = addr - CHG_RAM_BASE;
     if (off <= CHG_RAM_SIZE - (uint32_t)size) {
@@ -461,7 +465,10 @@ static inline void store(ChgMachine *m, uint32_t addr, uint32_t v, int size, int
         *wait |= WAIT_RAM_STORE;
         return;
     }
+    *wait |= WAIT_SLOW;
+    m->cycles = *cyc;
     bus_write_slow(m, addr, v, size, wait);
+    *cyc = m->cycles;
 }
 
 /* ------------------------------------------------------------------------ */
@@ -509,7 +516,8 @@ static uint32_t trap_enter(ChgMachine *m, uint32_t pc, uint32_t cause, uint32_t 
         return base;
     if (c->mtvec & 2) {
         int wait = 0;
-        return load(m, base + 4u * (uint32_t)vector, 4, &wait) & ~1u;
+        uint64_t cy = m->cycles;
+        return load(m, base + 4u * (uint32_t)vector, 4, &wait, &cy) & ~1u;
     }
     return base + 4u * (uint32_t)vector;
 }
@@ -575,9 +583,10 @@ static int pick_irq(ChgMachine *m)
         return -1;
 
     int best = -1, bestPrio = 256;
-    for (int i = 0; i < CHG_IRQ_COUNT; i++) {
-        if (!(ready >> i & 1))
-            continue;
+    for (uint64_t r = ready; r; r &= r - 1) {
+        const int i = __builtin_ctzll(r);
+        if (i >= CHG_IRQ_COUNT)
+            break;
         const int pr = p->prio[i];
         if (p->ithresdr && pr >= (int)(p->ithresdr & 0xff))
             continue;
@@ -684,6 +693,10 @@ void cpu_reset(ChgMachine *m)
     c->fetch_time = m->cycles;
     memset(m->dc_ram, 0, sizeof(m->dc_ram));
     memset(m->dc_flash, 0, sizeof(m->dc_flash));
+#ifdef CHG_JIT
+    memset(chg_jit_ramcode, 0, sizeof(chg_jit_ramcode));
+    jit_flush();
+#endif
 }
 
 static ChgInsn *fetch(ChgMachine *m, uint32_t pc, ChgInsn *tmp)
@@ -703,6 +716,9 @@ static ChgInsn *fetch(ChgMachine *m, uint32_t pc, ChgInsn *tmp)
         if (d->op) return d;
         memcpy(&raw, m->ram + off, 4);
         cpu_decode(pc, raw, d, false);
+#ifdef CHG_JIT
+        jit_mark_ram(off);
+#endif
         return d;
     }
     /* anywhere else (the 0x08000000 alias, the last halfword of a region):
@@ -716,9 +732,12 @@ static ChgInsn *fetch(ChgMachine *m, uint32_t pc, ChgInsn *tmp)
     return tmp;
 }
 
+#ifdef CHG_JIT_STATS
+unsigned long long chg_st_flash, chg_st_ram;
+#endif
 int chg_cpu_pct = 100;
 
-void cpu_exec(ChgMachine *m)
+static void cpu_exec_pct(ChgMachine *m)
 {
     ChgCpu *c = &m->cpu;
     uint32_t *x = c->x;
@@ -737,10 +756,25 @@ void cpu_exec(ChgMachine *m)
     bool pair_open = false;     /* the last instruction was a RAM store that opened a pair */
     unsigned recent_data = 0;   /* bit n: the instruction n back touched SRAM, from RAM code */
 
-    while (m->cycles < m->stop_at) {
+    uint64_t cyc = m->cycles;
+    uint64_t stop = m->stop_at;
+#define SYNC()   (m->cycles = cyc)
+#define RELOAD() (cyc = m->cycles, stop = m->stop_at)
+
+    while (cyc < stop) {
         retired++;
-        const uint64_t t_start = m->cycles;
-        const ChgInsn *d = fetch(m, pc, &tmp);
+        const uint64_t t_start = cyc;
+        const ChgInsn *d;
+        {
+            const uint32_t roff = pc - CHG_RAM_BASE;
+            if (pc < CHG_FLASH_SIZE - 2 && (d = &m->dc_flash[pc >> 1])->op) {
+            } else if (roff < CHG_RAM_SIZE - 2 && (d = &m->dc_ram[roff >> 1])->op) {
+            } else {
+                SYNC();
+                d = fetch(m, pc, &tmp);
+                RELOAD();
+            }
+        }
         const bool in_flash = pc < CHG_FLASH_SIZE;
         const uint32_t word = in_flash ? FLASH_WORD : RAM_WORD;
 
@@ -753,17 +787,17 @@ void cpu_exec(ChgMachine *m)
             while ((int32_t)(w - fw) > 0) {
                 fw++;
                 ft += word;
-                if (ft + word * (PREFETCH_DEPTH - 1) < m->cycles)
-                    ft = m->cycles - word * (PREFETCH_DEPTH - 1);
+                if (ft + word * (PREFETCH_DEPTH - 1) < cyc)
+                    ft = cyc - word * (PREFETCH_DEPTH - 1);
             }
-            if (ft > m->cycles)
-                m->cycles = ft;
+            if (ft > cyc)
+                cyc = ft;
         }
         /* reading a register the divider has not delivered yet */
-        if (div_ready > m->cycles && (d->rs1 == div_rd || d->rs2 == div_rd))
-            m->cycles = div_ready;
+        if (div_ready > cyc && (d->rs1 == div_rd || d->rs2 == div_rd))
+            cyc = div_ready;
 
-        const uint64_t issue = m->cycles;
+        const uint64_t issue = cyc;
         uint32_t npc = pc + d->len;
         int cost = d->cost;
         int wait = 0;
@@ -794,14 +828,14 @@ void cpu_exec(ChgMachine *m)
         case OP_BGEU: BRANCH(a >= b);
 #undef BRANCH
 
-        case OP_LB:  c->pc = pc; x[d->rd] = (uint32_t)(int8_t)load(m, a + (uint32_t)imm, 1, &wait); break;
-        case OP_LH:  c->pc = pc; x[d->rd] = (uint32_t)(int16_t)load(m, a + (uint32_t)imm, 2, &wait); break;
-        case OP_LW:  c->pc = pc; x[d->rd] = load(m, a + (uint32_t)imm, 4, &wait); break;
-        case OP_LBU: c->pc = pc; x[d->rd] = load(m, a + (uint32_t)imm, 1, &wait); break;
-        case OP_LHU: c->pc = pc; x[d->rd] = load(m, a + (uint32_t)imm, 2, &wait); break;
-        case OP_SB:  c->pc = pc; store(m, a + (uint32_t)imm, b, 1, &wait); break;
-        case OP_SH:  c->pc = pc; store(m, a + (uint32_t)imm, b, 2, &wait); break;
-        case OP_SW:  c->pc = pc; store(m, a + (uint32_t)imm, b, 4, &wait); break;
+        case OP_LB:  c->pc = pc; x[d->rd] = (uint32_t)(int8_t)load(m, a + (uint32_t)imm, 1, &wait, &cyc); break;
+        case OP_LH:  c->pc = pc; x[d->rd] = (uint32_t)(int16_t)load(m, a + (uint32_t)imm, 2, &wait, &cyc); break;
+        case OP_LW:  c->pc = pc; x[d->rd] = load(m, a + (uint32_t)imm, 4, &wait, &cyc); break;
+        case OP_LBU: c->pc = pc; x[d->rd] = load(m, a + (uint32_t)imm, 1, &wait, &cyc); break;
+        case OP_LHU: c->pc = pc; x[d->rd] = load(m, a + (uint32_t)imm, 2, &wait, &cyc); break;
+        case OP_SB:  c->pc = pc; store(m, a + (uint32_t)imm, b, 1, &wait, &cyc); break;
+        case OP_SH:  c->pc = pc; store(m, a + (uint32_t)imm, b, 2, &wait, &cyc); break;
+        case OP_SW:  c->pc = pc; store(m, a + (uint32_t)imm, b, 4, &wait, &cyc); break;
 
         case OP_ADDI:  x[d->rd] = a + (uint32_t)imm; break;
         case OP_SLTI:  x[d->rd] = (int32_t)a < imm; break;
@@ -829,8 +863,8 @@ void cpu_exec(ChgMachine *m)
         case OP_MULHSU: x[d->rd] = (uint32_t)(((int64_t)(int32_t)a * (int64_t)(uint64_t)b) >> 32); break;
         case OP_MULHU:  x[d->rd] = (uint32_t)(((uint64_t)a * (uint64_t)b) >> 32); break;
 #define DIVIDER() do { \
-            if (m->cycles < div_ready) m->cycles = div_ready; \
-            div_ready = m->cycles + DIV_LATENCY; \
+            if (cyc < div_ready) cyc = div_ready; \
+            div_ready = cyc + DIV_LATENCY; \
             div_rd = d->rd; \
         } while (0)
         case OP_DIV:
@@ -851,14 +885,14 @@ void cpu_exec(ChgMachine *m)
 
         case OP_LR:
             c->pc = pc;
-            x[d->rd] = load(m, a, 4, &wait);
+            x[d->rd] = load(m, a, 4, &wait, &cyc);
             c->lr_valid = true;
             c->lr_addr = a;
             break;
         case OP_SC:
             c->pc = pc;
             if (c->lr_valid && c->lr_addr == a) {
-                store(m, a, b, 4, &wait);
+                store(m, a, b, 4, &wait, &cyc);
                 x[d->rd] = 0;
             } else {
                 x[d->rd] = 1;
@@ -868,7 +902,7 @@ void cpu_exec(ChgMachine *m)
         case OP_AMOSWAP: case OP_AMOADD: case OP_AMOXOR: case OP_AMOAND: case OP_AMOOR:
         case OP_AMOMIN: case OP_AMOMAX: case OP_AMOMINU: case OP_AMOMAXU: {
             c->pc = pc;
-            const uint32_t old = load(m, a, 4, &wait);
+            const uint32_t old = load(m, a, 4, &wait, &cyc);
             uint32_t v = b;
             switch (d->op) {
             case OP_AMOADD: v = old + b; break;
@@ -880,34 +914,42 @@ void cpu_exec(ChgMachine *m)
             case OP_AMOMINU: v = old < b ? old : b; break;
             case OP_AMOMAXU: v = old > b ? old : b; break;
             }
-            store(m, a, v, 4, &wait);
+            store(m, a, v, 4, &wait, &cyc);
             x[d->rd] = old;
             break;
         }
 
         case OP_FENCE: break;
         case OP_ECALL:
+            SYNC();
             npc = exception(m, pc, CAUSE_ECALL_M, 0);
             taken = true;
             chg_kick(m);
+            RELOAD();
             break;
         case OP_EBREAK:
+            SYNC();
             npc = exception(m, pc, CAUSE_BREAKPOINT, pc);
             taken = true;
             chg_kick(m);
+            RELOAD();
             break;
         case OP_MRET:
+            SYNC();
             npc = mret(m);
             taken = true;
+            RELOAD();
             break;
         case OP_WFI:
             c->wfi = true;
             chg_kick(m);
+            stop = 0;
             break;
 
         case OP_CSRRW: case OP_CSRRS: case OP_CSRRC:
         case OP_CSRRWI: case OP_CSRRSI: case OP_CSRRCI: {
             bool ok;
+            SYNC();
             const uint32_t csr = (uint32_t)imm;
             const uint32_t old = csr_read(m, csr, &ok);
             const uint32_t src = (d->op >= OP_CSRRWI) ? (uint32_t)d->rs1 : a;
@@ -918,28 +960,33 @@ void cpu_exec(ChgMachine *m)
             case OP_CSRRC: case OP_CSRRCI: if (d->rs1) csr_write(m, csr, old & ~src); break;
             }
             x[d->rd] = old;
+            RELOAD();
             break;
         }
 
         case OP_ILLEGAL:
         default:
+            SYNC();
             npc = exception(m, pc, CAUSE_ILLEGAL, (uint32_t)imm);
             taken = true;
             chg_kick(m);
+            RELOAD();
             break;
         }
 
-        m->cycles += (uint64_t)cost + (uint64_t)(wait & WAIT_CYCLES);
+        cyc += (uint64_t)cost + (uint64_t)(wait & WAIT_CYCLES);
 
+        if (wait & WAIT_SLOW)
+            stop = m->stop_at;
         if (wait & (WAIT_FLASH_DATA | WAIT_RAM_STORE | WAIT_RAM_LOAD | WAIT_LOAD)) {
             if (wait & WAIT_FLASH_DATA) {
                 if (in_flash) {
                     /* the load had the flash; the prefetcher waited for it */
                     ft += FLASH_WORD;
-                    if (m->cycles < issue + FLASH_WORD) m->cycles = issue + FLASH_WORD;
+                    if (cyc < issue + FLASH_WORD) cyc = issue + FLASH_WORD;
                 } else {
                     frac += FLASH_LOAD_RAM8 - 8 * LOAD_CYCLES;
-                    m->cycles += frac >> 3;
+                    cyc += frac >> 3;
                     frac &= 7;
                 }
             }
@@ -975,17 +1022,382 @@ void cpu_exec(ChgMachine *m)
         if (pct != 100) {
             /* a faster CPU against the same peripherals: this instruction took
                1/pct of the time. Times the prefetcher and divider hold shrink with it */
-            const uint64_t spent = m->cycles - t_start;
+            const uint64_t spent = cyc - t_start;
             speed_acc += spent * 100;
             const uint64_t now = speed_acc / pct;
             speed_acc -= now * pct;
             const uint64_t shrink = spent - now;
-            m->cycles -= shrink;
+            cyc -= shrink;
             ft = ft > shrink ? ft - shrink : 0;
             div_ready = div_ready > shrink ? div_ready - shrink : 0;
         }
         pc = npc;
     }
+    m->cycles = cyc;
+    c->pc = pc;
+    c->fetch_word = fw;
+    c->fetch_time = ft;
+    c->div_ready = div_ready;
+    c->div_rd = (uint8_t)div_rd;
+    c->frac8 = (uint8_t)frac;
+    m->instret += retired;
+}
+#undef SYNC
+#undef RELOAD
+
+void cpu_exec(ChgMachine *m)
+{
+    if (chg_cpu_pct > 100) {
+        cpu_exec_pct(m);
+        return;
+    }
+    ChgCpu *c = &m->cpu;
+    uint32_t *x = c->x;
+    uint32_t pc = c->pc;
+    ChgInsn tmp;
+    uint64_t retired = 0;
+
+    /* the timing state lives in locals while running */
+    uint32_t fw = c->fetch_word;
+    uint64_t ft = c->fetch_time;
+    uint64_t div_ready = c->div_ready;
+    unsigned div_rd = c->div_rd;
+    unsigned frac = c->frac8;
+    bool pair_open = false;     /* the last instruction was a RAM store that opened a pair */
+    unsigned recent_data = 0;   /* bit n: the instruction n back touched SRAM, from RAM code */
+
+    /* the cycle count and the slice's end live in locals too; the slow paths
+       that other code looks at (peripherals, traps, CSRs) get them synced */
+    uint64_t cyc = m->cycles;
+    uint64_t stop = m->stop_at;
+#define SYNC()   (m->cycles = cyc)
+#define RELOAD() (cyc = m->cycles, stop = m->stop_at)
+
+    /* per instruction state: d by DISPATCH(), the rest by GENSTART() in the
+       handlers that go through the general tail */
+    uint64_t issue;
+    const ChgInsn *d;
+    uint32_t npc;
+    int cost, wait;
+    bool taken;
+
+    static const void *const labels[] = {
+        [OP_NONE] = &&L_ILLEGAL,
+        [OP_LUI] = &&L_LUI, [OP_AUIPC] = &&L_AUIPC, [OP_JAL] = &&L_JAL, [OP_JALR] = &&L_JALR,
+        [OP_BEQ] = &&L_BEQ, [OP_BNE] = &&L_BNE, [OP_BLT] = &&L_BLT, [OP_BGE] = &&L_BGE,
+        [OP_BLTU] = &&L_BLTU, [OP_BGEU] = &&L_BGEU,
+        [OP_LB] = &&L_LB, [OP_LH] = &&L_LH, [OP_LW] = &&L_LW, [OP_LBU] = &&L_LBU, [OP_LHU] = &&L_LHU,
+        [OP_SB] = &&L_SB, [OP_SH] = &&L_SH, [OP_SW] = &&L_SW,
+        [OP_ADDI] = &&L_ADDI, [OP_SLTI] = &&L_SLTI, [OP_SLTIU] = &&L_SLTIU, [OP_XORI] = &&L_XORI,
+        [OP_ORI] = &&L_ORI, [OP_ANDI] = &&L_ANDI, [OP_SLLI] = &&L_SLLI, [OP_SRLI] = &&L_SRLI, [OP_SRAI] = &&L_SRAI,
+        [OP_ADD] = &&L_ADD, [OP_SUB] = &&L_SUB, [OP_SLL] = &&L_SLL, [OP_SLT] = &&L_SLT, [OP_SLTU] = &&L_SLTU,
+        [OP_XOR] = &&L_XOR, [OP_SRL] = &&L_SRL, [OP_SRA] = &&L_SRA, [OP_OR] = &&L_OR, [OP_AND] = &&L_AND,
+        [OP_MUL] = &&L_MUL, [OP_MULH] = &&L_MULH, [OP_MULHSU] = &&L_MULHSU, [OP_MULHU] = &&L_MULHU,
+        [OP_DIV] = &&L_DIV, [OP_DIVU] = &&L_DIVU, [OP_REM] = &&L_REM, [OP_REMU] = &&L_REMU,
+        [OP_LR] = &&L_LR, [OP_SC] = &&L_SC,
+        [OP_AMOSWAP] = &&L_AMO, [OP_AMOADD] = &&L_AMO, [OP_AMOXOR] = &&L_AMO, [OP_AMOAND] = &&L_AMO,
+        [OP_AMOOR] = &&L_AMO, [OP_AMOMIN] = &&L_AMO, [OP_AMOMAX] = &&L_AMO, [OP_AMOMINU] = &&L_AMO,
+        [OP_AMOMAXU] = &&L_AMO,
+        [OP_FENCE] = &&L_FENCE, [OP_ECALL] = &&L_ECALL, [OP_EBREAK] = &&L_EBREAK, [OP_MRET] = &&L_MRET,
+        [OP_WFI] = &&L_WFI,
+        [OP_CSRRW] = &&L_CSR, [OP_CSRRS] = &&L_CSR, [OP_CSRRC] = &&L_CSR,
+        [OP_CSRRWI] = &&L_CSR, [OP_CSRRSI] = &&L_CSR, [OP_CSRRCI] = &&L_CSR,
+        [OP_ILLEGAL] = &&L_ILLEGAL,
+    };
+
+#ifdef CHG_JIT_STATS
+#define JIT_STAT_PC(p) do { if ((p) < CHG_FLASH_SIZE) chg_st_flash++; else chg_st_ram++; } while (0)
+#else
+#define JIT_STAT_PC(p) do { } while (0)
+#endif
+/* fetch, wait for the instruction's words, and jump to its handler */
+#define DISPATCH() do { \
+        if (!(cyc < stop)) goto done; \
+        retired++; \
+        JIT_STAT_PC(pc); \
+        { \
+            const uint32_t roff = pc - CHG_RAM_BASE; \
+            if (pc < CHG_FLASH_SIZE - 2 && (d = &m->dc_flash[pc >> 1])->op) { \
+            } else if (roff < CHG_RAM_SIZE - 2 && (d = &m->dc_ram[roff >> 1])->op) { \
+            } else { \
+                SYNC(); \
+                d = fetch(m, pc, &tmp); \
+                RELOAD(); \
+            } \
+        } \
+        { \
+            const uint32_t w = d->wend; \
+            const uint32_t word = pc < CHG_FLASH_SIZE ? FLASH_WORD : RAM_WORD; \
+            while ((int32_t)(w - fw) > 0) { \
+                fw++; \
+                ft += word; \
+                if (ft + word * (PREFETCH_DEPTH - 1) < cyc) \
+                    ft = cyc - word * (PREFETCH_DEPTH - 1); \
+            } \
+            if (ft > cyc) \
+                cyc = ft; \
+        } \
+        if (div_ready > cyc && (d->rs1 == div_rd || d->rs2 == div_rd)) \
+            cyc = div_ready; \
+        goto *labels[d->op]; \
+    } while (0)
+
+/* hand over to the translated code (jit_a64.c) at a point where the state is
+   exactly what a taken jump leaves: the prefetcher restarted at pc. It runs
+   until a slice ends or it meets something it leaves to us */
+#ifdef CHG_JIT
+#define JIT_TRY() do { \
+        if (chg_jit && cyc >= 16 && cyc < stop && !(pc & 1) && fw == WIDX(pc) - 1 && ( \
+                (pc < 0xfffeu && recent_data == 0 && !pair_open && !chg_jit_bad[pc >> 1]) || \
+                (pc - CHG_RAM_BASE < CHG_RAM_SIZE - 2 && !chg_jit_bad_ram[(pc - CHG_RAM_BASE) >> 1]))) { \
+            SYNC(); c->pc = pc; c->fetch_word = fw; c->fetch_time = ft; \
+            c->div_ready = div_ready; c->div_rd = (uint8_t)div_rd; c->frac8 = (uint8_t)frac; \
+            m->instret += retired; retired = 0; \
+            jit_run(m, (int)recent_data | (pair_open ? 8 : 0)); \
+            RELOAD(); pc = c->pc; fw = c->fetch_word; ft = c->fetch_time; \
+            div_ready = c->div_ready; div_rd = c->div_rd; frac = c->frac8; \
+            recent_data = (unsigned)chg_jit_rst & 7; pair_open = (chg_jit_rst & 8) != 0; \
+        } \
+    } while (0)
+#else
+#define JIT_TRY() do { } while (0)
+#endif
+
+/* an instruction that cost one cycle, touched no memory and did not jump */
+#define END_SIMPLE() do { \
+        cyc += 1; \
+        pair_open = false; \
+        recent_data = (recent_data << 1) & 7; \
+        pc += d->len; \
+        DISPATCH(); \
+    } while (0)
+#define A (x[d->rs1])
+#define B (x[d->rs2])
+#define IMM (d->imm)
+/* the handlers that use the general tail say what they did */
+#define GENSTART() do { issue = cyc; npc = pc + d->len; cost = d->cost; wait = 0; taken = false; } while (0)
+#define ALU(label, expr) label: x[d->rd] = (expr); END_SIMPLE();
+#define BR(label, cond) label: if (cond) { GENSTART(); npc = pc + (uint32_t)IMM; taken = true; goto general; } END_SIMPLE();
+
+    JIT_TRY();
+    DISPATCH();
+
+    ALU(L_LUI, (uint32_t)IMM)
+    ALU(L_AUIPC, pc + (uint32_t)IMM)
+    ALU(L_ADDI, A + (uint32_t)IMM)
+    ALU(L_SLTI, (int32_t)A < IMM)
+    ALU(L_SLTIU, A < (uint32_t)IMM)
+    ALU(L_XORI, A ^ (uint32_t)IMM)
+    ALU(L_ORI, A | (uint32_t)IMM)
+    ALU(L_ANDI, A & (uint32_t)IMM)
+    ALU(L_SLLI, A << IMM)
+    ALU(L_SRLI, A >> IMM)
+    ALU(L_SRAI, (uint32_t)((int32_t)A >> IMM))
+    ALU(L_ADD, A + B)
+    ALU(L_SUB, A - B)
+    ALU(L_SLL, A << (B & 31))
+    ALU(L_SLT, (int32_t)A < (int32_t)B)
+    ALU(L_SLTU, A < B)
+    ALU(L_XOR, A ^ B)
+    ALU(L_SRL, A >> (B & 31))
+    ALU(L_SRA, (uint32_t)((int32_t)A >> (B & 31)))
+    ALU(L_OR, A | B)
+    ALU(L_AND, A & B)
+    ALU(L_MUL, A * B)
+    ALU(L_MULH, (uint32_t)(((int64_t)(int32_t)A * (int64_t)(int32_t)B) >> 32))
+    ALU(L_MULHSU, (uint32_t)(((int64_t)(int32_t)A * (int64_t)(uint64_t)B) >> 32))
+    ALU(L_MULHU, (uint32_t)(((uint64_t)A * (uint64_t)B) >> 32))
+
+    BR(L_BEQ, A == B)
+    BR(L_BNE, A != B)
+    BR(L_BLT, (int32_t)A < (int32_t)B)
+    BR(L_BGE, (int32_t)A >= (int32_t)B)
+    BR(L_BLTU, A < B)
+    BR(L_BGEU, A >= B)
+
+    L_FENCE: END_SIMPLE();
+
+    L_JAL: GENSTART();
+        x[d->rd] = npc;
+        npc = pc + (uint32_t)IMM;
+        taken = true;
+        goto general;
+    L_JALR: GENSTART();
+        npc = (A + (uint32_t)IMM) & ~1u;
+        x[d->rd] = pc + d->len;
+        taken = true;
+        goto general;
+
+    L_LB: GENSTART();  c->pc = pc; x[d->rd] = (uint32_t)(int8_t)load(m, A + (uint32_t)IMM, 1, &wait, &cyc); goto general;
+    L_LH: GENSTART();  c->pc = pc; x[d->rd] = (uint32_t)(int16_t)load(m, A + (uint32_t)IMM, 2, &wait, &cyc); goto general;
+    L_LW: GENSTART();  c->pc = pc; x[d->rd] = load(m, A + (uint32_t)IMM, 4, &wait, &cyc); goto general;
+    L_LBU: GENSTART(); c->pc = pc; x[d->rd] = load(m, A + (uint32_t)IMM, 1, &wait, &cyc); goto general;
+    L_LHU: GENSTART(); c->pc = pc; x[d->rd] = load(m, A + (uint32_t)IMM, 2, &wait, &cyc); goto general;
+    L_SB: GENSTART();  c->pc = pc; store(m, A + (uint32_t)IMM, B, 1, &wait, &cyc); goto general;
+    L_SH: GENSTART();  c->pc = pc; store(m, A + (uint32_t)IMM, B, 2, &wait, &cyc); goto general;
+    L_SW: GENSTART();  c->pc = pc; store(m, A + (uint32_t)IMM, B, 4, &wait, &cyc); goto general;
+
+#define DIVIDER() do { \
+        if (cyc < div_ready) cyc = div_ready; \
+        div_ready = cyc + DIV_LATENCY; \
+        div_rd = d->rd; \
+    } while (0)
+    L_DIV: GENSTART();
+        DIVIDER();
+        if (B == 0) x[d->rd] = 0xffffffffu;
+        else if (A == 0x80000000u && B == 0xffffffffu) x[d->rd] = A;
+        else x[d->rd] = (uint32_t)((int32_t)A / (int32_t)B);
+        goto general;
+    L_DIVU: GENSTART(); DIVIDER(); x[d->rd] = B ? A / B : 0xffffffffu; goto general;
+    L_REM: GENSTART();
+        DIVIDER();
+        if (B == 0) x[d->rd] = A;
+        else if (A == 0x80000000u && B == 0xffffffffu) x[d->rd] = 0;
+        else x[d->rd] = (uint32_t)((int32_t)A % (int32_t)B);
+        goto general;
+    L_REMU: GENSTART(); DIVIDER(); x[d->rd] = B ? A % B : A; goto general;
+#undef DIVIDER
+
+    L_LR: GENSTART();
+        c->pc = pc;
+        x[d->rd] = load(m, A, 4, &wait, &cyc);
+        c->lr_valid = true;
+        c->lr_addr = A;
+        goto general;
+    L_SC: GENSTART();
+        c->pc = pc;
+        if (c->lr_valid && c->lr_addr == A) {
+            store(m, A, B, 4, &wait, &cyc);
+            x[d->rd] = 0;
+        } else {
+            x[d->rd] = 1;
+        }
+        c->lr_valid = false;
+        goto general;
+    L_AMO: { GENSTART();
+        c->pc = pc;
+        const uint32_t old = load(m, A, 4, &wait, &cyc);
+        uint32_t v = B;
+        switch (d->op) {
+        case OP_AMOADD: v = old + B; break;
+        case OP_AMOXOR: v = old ^ B; break;
+        case OP_AMOAND: v = old & B; break;
+        case OP_AMOOR:  v = old | B; break;
+        case OP_AMOMIN: v = (int32_t)old < (int32_t)B ? old : B; break;
+        case OP_AMOMAX: v = (int32_t)old > (int32_t)B ? old : B; break;
+        case OP_AMOMINU: v = old < B ? old : B; break;
+        case OP_AMOMAXU: v = old > B ? old : B; break;
+        }
+        store(m, A, v, 4, &wait, &cyc);
+        x[d->rd] = old;
+        goto general;
+    }
+
+    L_ECALL: GENSTART();
+        SYNC();
+        npc = exception(m, pc, CAUSE_ECALL_M, 0);
+        taken = true;
+        chg_kick(m);
+        RELOAD();
+        goto general;
+    L_EBREAK: GENSTART();
+        SYNC();
+        npc = exception(m, pc, CAUSE_BREAKPOINT, pc);
+        taken = true;
+        chg_kick(m);
+        RELOAD();
+        goto general;
+    L_MRET: GENSTART();
+        SYNC();
+        npc = mret(m);
+        taken = true;
+        RELOAD();
+        goto general;
+    L_WFI: GENSTART();
+        c->wfi = true;
+        chg_kick(m);
+        stop = 0;
+        goto general;
+
+    L_CSR: { GENSTART();
+        bool ok;
+        SYNC();
+        const uint32_t csr = (uint32_t)IMM;
+        const uint32_t old = csr_read(m, csr, &ok);
+        const uint32_t src = (d->op >= OP_CSRRWI) ? (uint32_t)d->rs1 : A;
+        c->pc = pc;
+        switch (d->op) {
+        case OP_CSRRW: case OP_CSRRWI: csr_write(m, csr, src); break;
+        case OP_CSRRS: case OP_CSRRSI: if (d->rs1) csr_write(m, csr, old | src); break;
+        case OP_CSRRC: case OP_CSRRCI: if (d->rs1) csr_write(m, csr, old & ~src); break;
+        }
+        x[d->rd] = old;
+        RELOAD();
+        goto general;
+    }
+
+    L_ILLEGAL: GENSTART();
+        SYNC();
+        npc = exception(m, pc, CAUSE_ILLEGAL, (uint32_t)IMM);
+        taken = true;
+        chg_kick(m);
+        RELOAD();
+        goto general;
+
+general:
+    cyc += (uint64_t)cost + (uint64_t)(wait & WAIT_CYCLES);
+
+    const bool in_flash = pc < CHG_FLASH_SIZE;
+    const uint32_t word = in_flash ? FLASH_WORD : RAM_WORD;
+    if (wait & WAIT_SLOW)
+        stop = m->stop_at;
+    if (wait & (WAIT_FLASH_DATA | WAIT_RAM_STORE | WAIT_RAM_LOAD | WAIT_LOAD)) {
+        if (wait & WAIT_FLASH_DATA) {
+            if (in_flash) {
+                /* the load had the flash; the prefetcher waited for it */
+                ft += FLASH_WORD;
+                if (cyc < issue + FLASH_WORD) cyc = issue + FLASH_WORD;
+            } else {
+                frac += FLASH_LOAD_RAM8 - 8 * LOAD_CYCLES;
+                cyc += frac >> 3;
+                frac &= 7;
+            }
+        }
+        if (!in_flash) {
+            /* the SRAM port was the prefetcher's for these cycles */
+            if (wait & WAIT_RAM_LOAD)
+                ft += RAM_LOAD_PORT;
+            if (wait & WAIT_RAM_STORE) {
+                /* back to back stores go in pairs: 2 port cycles, then 1 */
+                const bool second = pair_open;
+                ft += second ? RAM_STORE2_PORT : RAM_STORE_PORT;
+                pair_open = !second;
+            }
+        }
+    }
+    if (!(wait & WAIT_RAM_STORE))
+        pair_open = false;
+    recent_data = ((recent_data << 1) |
+                   (!in_flash && (wait & (WAIT_RAM_STORE | WAIT_RAM_LOAD | WAIT_LOAD)) != 0)) & 7;
+
+    if (taken) {
+        /* fetching starts over at the target once the word in flight is
+           in. A data access to SRAM in the two instructions before the
+           branch lands in the refetch bubble and hides a cycle of it */
+        const unsigned hidden = (recent_data & 6) ? 1 : 0;
+        uint64_t start = issue + 1 - hidden;
+        const uint64_t inflight = ft + word - hidden;
+        if (inflight > start)
+            start = inflight;
+        fw = WIDX(npc) - 1;
+        ft = start;
+    }
+    pc = npc;
+    if (taken) JIT_TRY();
+    DISPATCH();
+
+done:
+    m->cycles = cyc;
     c->pc = pc;
     c->fetch_word = fw;
     c->fetch_time = ft;
