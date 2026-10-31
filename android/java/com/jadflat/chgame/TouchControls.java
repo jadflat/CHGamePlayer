@@ -187,17 +187,17 @@ final class TouchControls extends View {
 
         btnRA = dp(30) * gs[G_A];
         btnRB = dp(30) * gs[G_B];
-        aX = W - dp(22) - dp(30) + fx[G_A] * W;         /* A: to the right and higher */
-        aY = (pt ? cy0 - dp(32) : H - dp(22) - dp(30) - dp(40)) + fy[G_A] * H;
-        bX = W - dp(22) - dp(30) - dp(68) + fx[G_B] * W; /* B: lower-left of A */
-        bY = (pt ? cy0 + dp(32) : H - dp(22) - dp(30)) + fy[G_B] * H;
+        aX = W - dp(22) - dp(30) - dp(68) + fx[G_A] * W; /* A: on the left, as on the board */
+        aY = (pt ? cy0 + dp(32) : H - dp(22) - dp(30)) + fy[G_A] * H;
+        bX = W - dp(22) - dp(30) + fx[G_B] * W;         /* B: to the right and higher */
+        bY = (pt ? cy0 - dp(32) : H - dp(22) - dp(30) - dp(40)) + fy[G_B] * H;
 
         float sp = gs[G_PILLS];
         pillW = dp(64) * sp;
         pillH = dp(22) * sp;
         pillY = (pt ? Math.min(H - dp(16), cy0 + dp(66) * gs[G_DPAD] + dp(34)) : H - dp(26)) + fy[G_PILLS] * H;
-        selX = W / 2 - dp(50) * sp + fx[G_PILLS] * W;
-        startX = W / 2 + dp(50) * sp + fx[G_PILLS] * W;
+        selX = W / 2 + dp(50) * sp + fx[G_PILLS] * W;
+        startX = W / 2 - dp(50) * sp + fx[G_PILLS] * W;
 
         menuW = dp(64) * gs[G_MENU];
         menuH = dp(22) * gs[G_MENU];

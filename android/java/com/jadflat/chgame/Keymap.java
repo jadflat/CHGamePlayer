@@ -25,10 +25,11 @@ final class Keymap {
             "Fast-forward (hold)", "Up (second button)", "Rewind (hold)", "Screenshot",
             "Quick save", "Quick load" };
     static final int FIRST_EXTRA = 8;  /* BUTTONS from here on are the app's, not the board's */
-    /* Android's BUTTON_B is the right face button, BUTTON_A the bottom one */
+    /* CHGame has A and START on the left. Android's BUTTON_A is the bottom face button, BUTTON_B the right one,
+       so A is the bottom button, B the right one, and START is the pad's Select, SELECT its Start. */
     private static final int[] DEFAULT_KEYS = { KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN,
-            KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_BUTTON_B,
-            KeyEvent.KEYCODE_BUTTON_A, KeyEvent.KEYCODE_BUTTON_START, KeyEvent.KEYCODE_BUTTON_SELECT,
+            KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_BUTTON_A,
+            KeyEvent.KEYCODE_BUTTON_B, KeyEvent.KEYCODE_BUTTON_SELECT, KeyEvent.KEYCODE_BUTTON_START,
             KeyEvent.KEYCODE_BUTTON_MODE, KeyEvent.KEYCODE_BUTTON_R1, KeyEvent.KEYCODE_BUTTON_X,
             KeyEvent.KEYCODE_BUTTON_L2, KeyEvent.KEYCODE_BUTTON_L1, KeyEvent.KEYCODE_BUTTON_THUMBL, KeyEvent.KEYCODE_BUTTON_THUMBR };
 
@@ -105,8 +106,8 @@ final class Keymap {
         map.clear();
         for (int i = 0; i < BUTTONS.length; i++) if (DEFAULT_KEYS[i] != 0) map.put(DEFAULT_KEYS[i], BUTTONS[i]);
         if (swapAB) {
-            map.put(KeyEvent.KEYCODE_BUTTON_A, Native.A);
-            map.put(KeyEvent.KEYCODE_BUTTON_B, Native.B);
+            map.put(KeyEvent.KEYCODE_BUTTON_B, Native.A);
+            map.put(KeyEvent.KEYCODE_BUTTON_A, Native.B);
         }
     }
 

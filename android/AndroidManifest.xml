@@ -4,8 +4,8 @@
      (a document tree). -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.jadflat.chgame"
-    android:versionCode="62"
-    android:versionName="0.62">
+    android:versionCode="63"
+    android:versionName="0.63">
 
     <uses-permission android:name="android.permission.INTERNET" />
 

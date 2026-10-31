@@ -5,7 +5,7 @@ Nova, with the **CHGame Player** app, alone or started from the ES-DE game list:
 
 | | What it is | Best for |
 |---|---|---|
-| **A. CHGame Player** | a small app of its own (`CHGamePlayer-0.62.apk`) | the simplest setup |
+| **A. CHGame Player** | a small app of its own (`CHGamePlayer-0.63.apk`) | the simplest setup |
 | **B. ES-DE** | a game-list front end that starts the app for you | one menu for every system you play |
 
 The RetroArch (libretro) core for the same emulator is a separate project:
@@ -20,7 +20,7 @@ Release file:
 
 | File | For |
 |---|---|
-| `CHGamePlayer-0.62.apk` | A, and B |
+| `CHGamePlayer-0.63.apk` | A, and B |
 | `frontends/es_systems.xml`, `frontends/es_find_rules.xml` | B |
 
 Your games:
@@ -38,7 +38,7 @@ a microSD card, or any file-sharing app you already use. The Retroid's internal 
 ## A. CHGame Player (the app)
 
 ### Install
-1. Copy `CHGamePlayer-0.62.apk` to the Retroid, for example into `Download`.
+1. Copy `CHGamePlayer-0.63.apk` to the Retroid, for example into `Download`.
 2. Open it in the Retroid's file manager. The first time, Android asks you to allow installs
    from that file manager: allow it, go back, and tap the APK again. Then tap **Install**.
 3. *CHGame* now appears with your apps.
@@ -164,9 +164,9 @@ B or BACK goes back to the list.
 | CHGame button | Retroid |
 |---|---|
 | D-pad | d-pad or left stick |
-| A | the **right** face button |
-| B | the **bottom** face button |
-| START / SELECT | START / SELECT |
+| A (left on the board) | the **bottom** face button |
+| B (right on the board) | the **right** face button |
+| START (left) / SELECT | the pad's Select / Start |
 | Up (a second button for it) | Y, the left face button |
 
 **Options → Map buttons** changes this: choose a CHGame button (Up, Down, Left,
@@ -320,7 +320,6 @@ no `.CHG` files:
 | `chgame_sd` microSD card | folder, Image, off |
 | `chgame_dat_all` Data files on the card | Off, All .DAT in folder |
 | `chgame_cpu` CPU speed (frame rate unchanged) | 100%, 150%, 200%, 300% |
-| `chgame_speed_osd` CPU load display | Off, On |
 | `chgame_sound` Sound model | bare pin, piezo, Speaker, Soft, Warm, Crisp |
 | `chgame_volume` Volume | Off, 25%, 50%, 75%, 100%, 150% |
 | `chgame_bass` Bass | Off, Low, High |
