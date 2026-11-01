@@ -173,8 +173,9 @@ public class OptionsActivity extends Page {
         }
 
         section("About");
-        row("CHGame Player " + MainActivity.VERSION, "An app by jadflat for playing CHGame games. Its only permission is "
-                + "the internet, for Get games; it sees only the folders you choose.", null);
+        row("Check for updates", "Looks for a newer CHGame Player on GitHub", () -> Updater.checkNow(this, prefs));
+        row("CHGame Player " + MainActivity.VERSION, "An app by jadflat for playing CHGame games. Its permissions are the internet, for Get games and updates, and installing its own updates; "
+                + "it sees only the folders you choose.", null);
         row("CHGame", "The CHGame handheld, its platform and the SD bootloader are by Kevin Bates (bateske), "
                 + "chgame.website. Apache-2.0; the bootloader is MIT.", null);
         row("Emulation", "CHGame Emulator by joyrider3774, MIT licence: all of the emulation, unchanged.", null);

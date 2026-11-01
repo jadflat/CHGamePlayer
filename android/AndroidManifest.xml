@@ -4,10 +4,11 @@
      (a document tree). -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.jadflat.chgame"
-    android:versionCode="106"
-    android:versionName="1.06">
+    android:versionCode="108"
+    android:versionName="1.08">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="36" />
     <uses-feature android:name="android.hardware.gamepad" android:required="false" />
@@ -62,6 +63,8 @@
                 <data android:scheme="content" />
             </intent-filter>
         </activity>
+
+        <receiver android:name=".Updater$Result" android:exported="false" />
 
         <activity
             android:name=".OptionsActivity"
