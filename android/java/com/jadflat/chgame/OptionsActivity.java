@@ -174,7 +174,7 @@ public class OptionsActivity extends Page {
 
         section("About");
         row("Check for updates", "Looks for a newer CHGame Player on GitHub", () -> Updater.checkNow(this, prefs));
-        row("CHGame Player " + MainActivity.VERSION, "An app by jadflat for playing CHGame games. Its permissions are the internet, for Get games and updates, and installing its own updates; "
+        row("CHGame Player " + MainActivity.VERSION, "An app by jadflat for playing CHGame games. Its permissions are the internet, for Get games and updates; "
                 + "it sees only the folders you choose.", null);
         row("CHGame", "The CHGame handheld, its platform and the SD bootloader are by Kevin Bates (bateske), "
                 + "chgame.website. Apache-2.0; the bootloader is MIT.", null);
