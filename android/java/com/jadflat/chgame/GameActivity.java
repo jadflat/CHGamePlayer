@@ -286,7 +286,10 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     }
 
     private void continueFrom(File f) {
-        if (!Native.loadState(f.getPath())) toast("The resume point could not be loaded; starting fresh");
+        if (!Native.loadState(f.getPath())) {
+            Saves.deleteState(f);       /* another build's, or damaged: it would be offered again */
+            toast("The resume point is from another version of the game; starting fresh");
+        }
     }
 
     /** On leaving (or going to the background): the resume point. */

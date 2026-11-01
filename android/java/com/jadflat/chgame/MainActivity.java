@@ -53,7 +53,7 @@ import java.util.concurrent.Executors;
  * Options, where everything else lives.
  */
 public class MainActivity extends Activity {
-    static final String VERSION = "0.93";
+    static final String VERSION = "1.00";
     static final String PREFS = "chgame";
 
     private SharedPreferences prefs;
@@ -1448,9 +1448,10 @@ public class MainActivity extends Activity {
                 String key = fileName(e).toUpperCase(Locale.ROOT), got = prefs.getString("got:" + key, null);
                 if (got != null && got.isEmpty()) got = null;
                 String latest = prefs.getString("ver:" + key, "");
-                ver = got != null ? got.replaceFirst("^[vV]", "") : prefs.contains("upd:" + key) ? (latest.isEmpty() ? "" : "older than " + latest) : latest;
+                /* only what is known: an update pending means the installed version is unknown, so none is shown */
+                ver = got != null ? got.replaceFirst("^[vV]", "") : prefs.contains("upd:" + key) ? "" : latest;
             }
-            if (!ver.isEmpty()) d.append(d.length() > 0 ? " · " : "").append(ver.matches("\\d{4}-.*|older.*") ? "" : "v").append(ver);
+            if (!ver.isEmpty()) d.append(d.length() > 0 ? " · " : "").append("v").append(ver);
         }
         if (hidden.contains(e.path)) d.append(d.length() > 0 ? " · " : "").append("Hidden");
         long time = Stats.time(this, fileName(e)), last = Stats.last(this, fileName(e));
@@ -1480,6 +1481,30 @@ public class MainActivity extends Activity {
         if (c == null) {
             try { c = Cart.read(getContentResolver(), e.uri); } catch (Exception ignored) { }
         }
+        final Cart cart0 = c;
+        final String fn0 = fileName(e);
+        if (syncing) return;        /* a second tap while the card files are being fetched */
+        syncing = true;
+        final Uri uri0 = e.uri;
+        new Thread(() -> {      /* the card files the game needs, fetched first if missing */
+            try {
+                Uri t = tree();
+                if (t != null) Updates.syncData(this, prefs, t, fn0, cart0 == null ? null : cart0.dats);
+            } finally {
+                runOnUiThread(() -> {
+                    syncing = false;
+                    if (isFinishing()) return;
+                    for (int i = 0; i < games.size(); i++) if (games.get(i).uri.equals(uri0)) { playChecked(i, cart0); break; }
+                });
+            }
+        }).start();
+    }
+
+    private boolean syncing;
+
+    private void playChecked(int pos, Cart c) {
+        if (pos < 0 || pos >= games.size()) return;
+        Files.Entry e = games.get(pos);
         List<String> missing = missingDats(c);
         if (missing.isEmpty()) {
             start(pos);

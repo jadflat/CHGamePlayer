@@ -70,6 +70,7 @@ final class SnapMaker {
         try {
             File g = Files.copyGame(c, game.uri, fileName);
             Files.importData(c);
+            Files.ensureData(c, g);
             File saves = new File(work, "saves");
             saves.mkdirs();
             /* no save: as the game starts the first time (with one it may sit on a continue screen) */
@@ -172,6 +173,7 @@ final class SnapMaker {
             } else {
                 File g = Files.copyGame(c, game.uri, fileName);
                 Files.importData(c);
+                Files.ensureData(c, g);
                 File saves = new File(work, "saves");
                 saves.mkdirs();
                 File[] old = saves.listFiles();

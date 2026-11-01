@@ -95,16 +95,75 @@ final class Files {
         Map<String, Long> stamps = new HashMap<>();
         for (Entry e : list(cr, tree)) {
             if (isGame(e.path) || isSave(e.path) || e.path.startsWith("screenshots/") || e.size > MAX_FILE) continue;
-            File f = inside(sd, e.path);
-            if (!(f.isFile() && f.length() == e.size && f.lastModified() >= e.modified)) {
+            try {
+                File f = inside(sd, e.path);
+                /* a .DAT is the game's data, never written by the game: it is current only if it is the very file
+                   imported (same size, stamp and header); other files may have been changed by the game, so a newer copy stays */
+                boolean data = e.path.toUpperCase(Locale.ROOT).endsWith(".DAT") && !e.path.toUpperCase(Locale.ROOT).contains("SAVE");   /* a save is written by the game: the newer copy stays */
+                boolean same = f.isFile() && f.length() == e.size
+                        && (data ? f.lastModified() == e.modified && sameHead(cr, e.uri, f) : f.lastModified() >= e.modified);
+                if (!same) {
+                    f.getParentFile().mkdirs();
+                    try (InputStream in = cr.openInputStream(e.uri); OutputStream out = new FileOutputStream(f)) {
+                        copy(in, out);
+                    }
+                    if (data && e.modified > 0) f.setLastModified(e.modified);
+                }
+                stamps.put(e.path, f.lastModified());
+            } catch (IOException | RuntimeException ex) {
+                /* this file only: the others still go on the card */
+            }
+        }
+        return stamps;
+    }
+
+    /** The first 4 KB of both copies match (a data file's header: Starlift's build hash is in block 0). */
+    private static boolean sameHead(ContentResolver cr, Uri uri, File f) {
+        byte[] a = new byte[4096], b = new byte[4096];
+        try (InputStream x = cr.openInputStream(uri); InputStream y = new FileInputStream(f)) {
+            if (x == null) return true;
+            int na = readUpTo(x, a), nb = readUpTo(y, b);
+            return na == nb && java.util.Arrays.equals(a, b);
+        } catch (IOException e) {
+            return false;
+        }
+    }
+
+    private static int readUpTo(InputStream in, byte[] buf) throws IOException {
+        int t = 0;
+        for (int r; t < buf.length && (r = in.read(buf, t, buf.length - t)) > 0; ) t += r;
+        return t;
+    }
+
+    /** The .DAT files this game names (its .CHG holds the card file name, as "STARLIFTDAT" or "STARLIFT.DAT")
+        that the picked folder has: copied in whatever the stamps say if the private copy is missing or differs. */
+    static void ensureData(Context ctx, File game) {
+        try {
+            String t = ctx.getSharedPreferences(MainActivity.PREFS, Context.MODE_PRIVATE).getString("tree", null);
+            if (t == null) return;
+            byte[] all;
+            try (InputStream in = new FileInputStream(game)) {
+                all = new byte[(int) Math.min(game.length(), 1 << 20)];
+                int n = 0;
+                for (int r; n < all.length && (r = in.read(all, n, all.length - n)) > 0; ) n += r;
+            }
+            String text = new String(all, java.nio.charset.StandardCharsets.ISO_8859_1).toUpperCase(Locale.ROOT);
+            ContentResolver cr = ctx.getContentResolver();
+            File sd = sdFolder(ctx);
+            for (Entry e : list(cr, Uri.parse(t))) {
+                String n = e.path.substring(e.path.lastIndexOf('/') + 1).toUpperCase(Locale.ROOT);
+                if (!n.endsWith(".DAT") || e.size > MAX_FILE) continue;
+                String bare = n.substring(0, n.length() - 4);
+                if (!text.contains(n) && !text.contains(bare + "DAT")) continue;
+                File f = inside(sd, e.path);
+                if (f.isFile() && f.length() == e.size && sameHead(cr, e.uri, f)) continue;
                 f.getParentFile().mkdirs();
                 try (InputStream in = cr.openInputStream(e.uri); OutputStream out = new FileOutputStream(f)) {
                     copy(in, out);
                 }
+                if (e.modified > 0) f.setLastModified(e.modified);
             }
-            stamps.put(e.path, f.lastModified());
-        }
-        return stamps;
+        } catch (Exception ignored) { }
     }
 
     /** The games folder's .DAT files into the SD folder, for a game run without GameActivity (preview, clips); quiet on failure. */

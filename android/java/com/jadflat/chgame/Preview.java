@@ -50,7 +50,7 @@ final class Preview {
         if ("off".equals(Options.preview(p))) return;
         final int s = session;
         soundOn = "sound".equals(Options.preview(p));
-        pending = () -> runner.execute(() -> { if (!(video && playVideo(fileName, s))) run(e, fileName, s); });
+        pending = () -> runner.execute(() -> { syncCard(e, fileName); if (!(video && playVideo(fileName, s))) run(e, fileName, s); });
         ui.postDelayed(pending, DELAY_MS);
     }
 
@@ -137,13 +137,25 @@ final class Preview {
         }
     }
 
+    /** The card files the game needs, fetched into the games folder if missing or out of date (quiet; once per version). */
+    private void syncCard(Files.Entry e, String fileName) {
+        try {
+            SharedPreferences p = a.getSharedPreferences(MainActivity.PREFS, Activity.MODE_PRIVATE);
+            String t = p.getString("tree", null);
+            if (t == null) return;
+            Cart c = Cart.read(a.getContentResolver(), e.uri);
+            Updates.syncData(a, p, android.net.Uri.parse(t), fileName, c == null ? null : c.dats);
+        } catch (Exception ignored) { }
+    }
+
     private void run(Files.Entry e, String fileName, int s) {
         synchronized (CORE) {
             if (s != session || gameRunning) return;
             File game, saves;
             try {
                 game = Files.copyGame(a, e.uri, fileName);
-                Files.importData(a);        /* STARLIFT.DAT and the like, or the game shows its "DAT not found" screen */
+                Files.importData(a);
+                Files.ensureData(a, game);  /* STARLIFT.DAT and the like, or the game shows its "DAT not found" screen */
                 /* an empty save folder: the game starts as it does the first time, and
                    what it writes stays here */
                 saves = new File(a.getCacheDir(), "preview");

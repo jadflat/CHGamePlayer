@@ -98,7 +98,6 @@ final class Updates {
     static boolean check(Context c, SharedPreferences prefs, Uri tree) {
         ContentResolver cr = c.getContentResolver();
         Map<String, String[]> src = sources(c, prefs);
-        Map<String, String> days = new HashMap<>();       /* repo -> date of its latest change, for repos with no release */
         Map<String, String> tags = new HashMap<>();       /* repo -> latest tag ("" when unreachable) */
         boolean changed = false;
         SharedPreferences.Editor ed = prefs.edit();
@@ -122,25 +121,8 @@ final class Updates {
                 tags.put(s[0], tag);
             }
             if (tag.isEmpty()) {
-                /* no release: the date of the repo's latest change stands in for a version */
-                String day = days.get(s[0]);
-                if (day == null) {
-                    day = "";
-                    try {
-                        HttpURLConnection h = CatalogueActivity.open("https://api.github.com/repos/" + s[0] + "/commits?per_page=1");
-                        try (InputStream in = h.getInputStream()) {
-                            java.util.regex.Matcher m = java.util.regex.Pattern.compile("\"date\"\\s*:\\s*\"(\\d{4}-\\d\\d-\\d\\d)")
-                                    .matcher(CatalogueActivity.readAll(in, 1 << 16));
-                            if (m.find()) day = m.group(1);
-                        } finally {
-                            h.disconnect();
-                        }
-                    } catch (Exception ex) {
-                        /* leave it */
-                    }
-                    days.put(s[0], day);
-                }
-                if (!day.isEmpty()) ed.putString("ver:" + file.toUpperCase(Locale.ROOT), day);
+                /* no release: no version can be worked out */
+                ed.remove("ver:" + file.toUpperCase(Locale.ROOT));
                 continue;
             }
             String bare = tag.replaceFirst("^[vV]", "");
@@ -561,6 +543,137 @@ final class Updates {
             return null;
         } catch (IOException ex) {
             return ex.getMessage() == null ? "download failed" : ex.getMessage();
+        }
+    }
+
+    /** The bundled catalogue's extra (non-game) files for a repo: name (upper case) -> asset path inside the app. */
+    private static Map<String, String> bundledFiles(Context c, String repo) {
+        Map<String, String> out = new HashMap<>();
+        if (repo == null) return out;
+        try (InputStream in = c.getAssets().open("catalogue-private.json")) {
+            JSONArray games = new JSONObject(CatalogueActivity.readAll(in, 1 << 20)).getJSONArray("games");
+            for (int i = 0; i < games.length(); i++) {
+                JSONObject g = games.getJSONObject(i);
+                JSONArray files = g.optJSONArray("files");
+                if (!repo.equals(g.optString("repo")) || files == null) continue;
+                for (int k = 0; k < files.length(); k++) {
+                    String name = files.getJSONObject(k).optString("name", "");
+                    if (!name.isEmpty() && !Files.isGame(name))
+                        out.put(name.toUpperCase(Locale.ROOT), files.getJSONObject(k).optString("asset", ""));
+                }
+            }
+        } catch (Exception e) {
+            /* none */
+        }
+        return out;
+    }
+
+    /** Blocking, quiet: the card files a game needs (its .DAT names, and the catalogue's extra files) into the
+        games folder where they are missing or differ from the release's (or the app's own copy), once per game version. */
+    static synchronized void syncData(Context c, SharedPreferences prefs, Uri tree, String file, java.util.Collection<String> dats) {
+        try {
+            if (tree == null) return;
+            String u = file.toUpperCase(Locale.ROOT);
+            String repo = repoFor(c, prefs, file);
+            Map<String, String> bundled = bundledFiles(c, repo);
+            java.util.Set<String> want = new java.util.LinkedHashSet<>();
+            if (dats != null) for (String d : dats) want.add(d.toUpperCase(Locale.ROOT));
+            want.addAll(bundled.keySet());
+            if (want.isEmpty()) return;
+            String tag = prefs.getString("got:" + u, null);     /* the installed version: only then may a file be replaced */
+            if (tag != null && tag.isEmpty()) tag = null;
+            ContentResolver cr = c.getContentResolver();
+            java.util.Set<String> have = new java.util.HashSet<>();
+            for (Files.Entry f : Files.list(cr, tree)) have.add(f.path.substring(f.path.lastIndexOf('/') + 1).toUpperCase(Locale.ROOT));
+            boolean missing = !have.containsAll(want);
+            
+            if (!missing && (tag == null ? "latest" : tag).equals(prefs.getString("datok:" + u, ""))) return;
+            if (System.currentTimeMillis() - prefs.getLong("datfail:" + u, 0) < 3600_000L) return;
+            boolean ok = true;
+            for (String n : want) {
+                try {
+                    ok &= syncOne(c, cr, tree, repo, tag, n, bundled.get(n), tag != null && !n.contains("SAVE"));
+                } catch (Exception ex) {
+                    ok = false;
+                }
+            }
+            SharedPreferences.Editor ed = prefs.edit();
+            if (ok) {
+                ed.remove("datfail:" + u);
+                ed.putString("datok:" + u, tag == null ? "latest" : tag);
+            } else {
+                ed.putLong("datfail:" + u, System.currentTimeMillis());
+            }
+            ed.apply();
+        } catch (Exception ignored) { }
+    }
+
+    /** One card file: true if it is now current (or there is nothing to get it from while one is there). */
+    private static boolean syncOne(Context c, ContentResolver cr, Uri tree, String repo, String tag, String name, String asset, boolean replace) throws IOException {
+        Uri doc = existing(cr, tree, name);
+        if (doc != null && !replace) return true;       /* never touch a file we cannot prove is an old copy (saves, hand-installed games) */
+        HttpURLConnection h = null;
+        InputStream in = null;
+        long len = -1;
+        if (repo != null) {
+            String[] urls = tag == null ? new String[] { "latest/download" }      /* tags are stored with or without the v */
+                    : new String[] { "download/" + Uri.encode(tag), "download/v" + Uri.encode(tag) };
+            for (String u : urls) {      /* the installed version's release, else the latest one */
+                try {
+                    h = CatalogueActivity.open("https://github.com/" + repo + "/releases/" + u + "/" + Uri.encode(name));
+                    in = h.getInputStream();
+                    len = h.getContentLengthLong();
+                    break;
+                } catch (IOException ex) {
+                    if (h != null) h.disconnect();
+                    h = null;
+                    in = null;
+                }
+            }
+        }
+        if (in == null && doc == null && asset != null && !asset.isEmpty()) in = c.getAssets().open(asset);     /* the app's copy only fills a gap */
+        if (in == null) return doc != null;
+        java.io.File tmp = java.io.File.createTempFile("card", ".tmp", c.getCacheDir());
+        try {
+            byte[] head = new byte[4096];
+            int n = 0;
+            for (int r; n < head.length && (r = in.read(head, n, head.length - n)) > 0; ) n += r;
+            if (doc != null) {
+                byte[] mine = new byte[4096];
+                int m = 0;
+                long mineLen = -1;
+                try (InputStream x = cr.openInputStream(doc); android.content.res.AssetFileDescriptor fd = cr.openAssetFileDescriptor(doc, "r")) {
+                    if (fd != null) mineLen = fd.getLength();
+                    if (x != null) for (int r; m < mine.length && (r = x.read(mine, m, mine.length - m)) > 0; ) m += r;
+                }
+                if (m == n && (len < 0 || len == mineLen) && java.util.Arrays.equals(mine, head)) return true;
+            }
+            long total = n;
+            try (OutputStream out = new java.io.FileOutputStream(tmp)) {
+                out.write(head, 0, n);
+                byte[] buf = new byte[1 << 16];
+                for (int r; (r = in.read(buf)) > 0; ) {
+                    total += r;
+                    if (total > (128L << 20)) throw new IOException("file too big");
+                    out.write(buf, 0, r);
+                }
+            }
+            if (total == 0) return doc != null;
+            if (doc == null) {
+                doc = android.provider.DocumentsContract.createDocument(cr, android.provider.DocumentsContract.buildDocumentUriUsingTree(
+                        tree, android.provider.DocumentsContract.getTreeDocumentId(tree)), "application/octet-stream", name);
+                if (doc == null) return false;
+            }
+            try (InputStream src = new java.io.FileInputStream(tmp); OutputStream out = cr.openOutputStream(doc, "wt")) {
+                if (out == null) return false;
+                byte[] buf = new byte[1 << 16];
+                for (int r; (r = src.read(buf)) > 0; ) out.write(buf, 0, r);
+            }
+            return true;
+        } finally {
+            try { in.close(); } catch (IOException ignored) { }
+            if (h != null) h.disconnect();
+            tmp.delete();
         }
     }
 }

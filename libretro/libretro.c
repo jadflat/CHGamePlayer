@@ -786,6 +786,13 @@ RETRO_API bool retro_unserialize(const void *data, size_t size)
     } else {
         return false;
     }
+    /* a state of another build of this game: its flash holds that build's program, which expects that
+       build's card files (Starlift 0.24's state on 0.30's STARLIFT.DAT never finds its card). The
+       metadata page (length, CRC-32 of the program) tells the builds apart. */
+    if (memcmp(sm->flash + 0xF700u, m.flash + 0xF700u, 16) != 0) {
+        core_log(RETRO_LOG_WARN, "state is from another build of this game: not loaded");
+        return false;
+    }
     struct SdCard *sd = m.sd;
     const float volume = audio.volume;
     const bool piezo = audio.piezo;
