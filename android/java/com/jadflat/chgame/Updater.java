@@ -59,7 +59,7 @@ final class Updater {
                 prefs.edit().putLong("selfAt", System.currentTimeMillis()).apply();
                 if (f != null && newer(f.tag, MainActivity.VERSION)
                         && (manual || !f.tag.equals(prefs.getString("selfSkip", "")))) {
-                    a.runOnUiThread(() -> { if (!a.isFinishing()) offer(a, prefs, f); });
+                    a.runOnUiThread(() -> { if (!a.isFinishing() && !a.isDestroyed()) offer(a, prefs, f); });
                 } else if (manual) {
                     a.runOnUiThread(() -> Toast.makeText(a, "You have the latest version", Toast.LENGTH_LONG).show());
                 }
@@ -130,39 +130,41 @@ final class Updater {
         }
         android.widget.TextView progress = Ui.text(a, "Starting…", 16, Ui.ON_SURFACE, Ui.REGULAR);
         progress.setPadding(Ui.dp(a, 24), Ui.dp(a, 16), Ui.dp(a, 24), Ui.dp(a, 8));
-        final boolean[] cancel = { false };
+        final java.util.concurrent.atomic.AtomicBoolean cancel = new java.util.concurrent.atomic.AtomicBoolean();
         AlertDialog d = new AlertDialog.Builder(a, Ui.dialogTheme())
                 .setTitle("Downloading update")
                 .setView(progress)
                 .setCancelable(false)
-                .setNegativeButton("Cancel", (x, y) -> cancel[0] = true)
+                .setNegativeButton("Cancel", (x, y) -> cancel.set(true))
                 .show();
         new Thread(() -> {
             String err = null;
             File apk = new File(a.getCacheDir(), "update.apk");
             try {
                 download(a, f, apk, progress, cancel);
-                if (!cancel[0]) commit(a, apk);
+                if (!cancel.get()) commit(a, apk);
             } catch (Exception e) {
                 err = e.getMessage() == null ? e.toString() : e.getMessage();
-                apk.delete();
             }
+            apk.delete();       /* the install session holds its own copy */
             final String msg = err;
             a.runOnUiThread(() -> {
-                d.dismiss();
+                if (!a.isDestroyed()) {
+                    try { d.dismiss(); } catch (RuntimeException ignored) { }
+                }
                 if (msg != null) Toast.makeText(a, "Update failed: " + msg, Toast.LENGTH_LONG).show();
             });
         }, "updater-install").start();
     }
 
-    private static void download(Activity a, Found f, File apk, android.widget.TextView progress, boolean[] cancel) throws Exception {
+    private static void download(Activity a, Found f, File apk, android.widget.TextView progress, java.util.concurrent.atomic.AtomicBoolean cancel) throws Exception {
         if (f.size <= 0 || f.size > MAX_APK) throw new Exception("bad size");
         HttpURLConnection h = CatalogueActivity.open(f.url);
         long got = 0;
         try (InputStream in = h.getInputStream(); OutputStream out = new FileOutputStream(apk)) {
             byte[] buf = new byte[32768];
             long shown = 0;
-            for (int n; !cancel[0] && (n = in.read(buf)) > 0; ) {
+            for (int n; !cancel.get() && (n = in.read(buf)) > 0; ) {
                 got += n;
                 if (got > MAX_APK || got > f.size) throw new Exception("too big");
                 out.write(buf, 0, n);
@@ -175,7 +177,7 @@ final class Updater {
         } finally {
             h.disconnect();
         }
-        if (cancel[0]) { apk.delete(); return; }
+        if (cancel.get()) { apk.delete(); return; }
         if (got != f.size) throw new Exception("download incomplete");
     }
 
@@ -183,7 +185,9 @@ final class Updater {
         PackageInstaller pi = c.getPackageManager().getPackageInstaller();
         PackageInstaller.SessionParams sp = new PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL);
         sp.setSize(apk.length());
+        sp.setAppPackageName(c.getPackageName());       /* only an update of this app */
         int id = pi.createSession(sp);
+        boolean done = false;
         try (PackageInstaller.Session s = pi.openSession(id)) {
             try (InputStream in = new java.io.FileInputStream(apk); OutputStream out = s.openWrite("update.apk", 0, apk.length())) {
                 byte[] buf = new byte[65536];
@@ -193,6 +197,11 @@ final class Updater {
             Intent i = new Intent(c, Result.class).setAction("com.jadflat.chgame.UPDATE_RESULT");
             PendingIntent p = PendingIntent.getBroadcast(c, id, i, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_MUTABLE);
             s.commit(p.getIntentSender());
+            done = true;
+        } finally {
+            if (!done) {
+                try { pi.abandonSession(id); } catch (RuntimeException ignored) { }
+            }
         }
     }
 
@@ -205,7 +214,7 @@ final class Updater {
                 if (confirm != null) c.startActivity(confirm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
                 return;
             }
-            if (st != PackageInstaller.STATUS_SUCCESS) {
+            if (st != PackageInstaller.STATUS_SUCCESS && st != PackageInstaller.STATUS_FAILURE_ABORTED) {
                 String m = i.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE);
                 Toast.makeText(c, "Update failed" + (m == null ? "" : ": " + m), Toast.LENGTH_LONG).show();
             }
