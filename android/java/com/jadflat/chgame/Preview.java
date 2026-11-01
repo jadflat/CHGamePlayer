@@ -143,6 +143,7 @@ final class Preview {
             File game, saves;
             try {
                 game = Files.copyGame(a, e.uri, fileName);
+                Files.importData(a);        /* STARLIFT.DAT and the like, or the game shows its "DAT not found" screen */
                 /* an empty save folder: the game starts as it does the first time, and
                    what it writes stays here */
                 saves = new File(a.getCacheDir(), "preview");

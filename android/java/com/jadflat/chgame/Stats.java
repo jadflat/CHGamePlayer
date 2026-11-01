@@ -15,14 +15,19 @@ final class Stats {
         return c.getSharedPreferences("stats", Context.MODE_PRIVATE);
     }
 
+    /** Recording is off until the player turns it on in Options. */
+    static boolean enabled(Context c) { return prefs(c).getBoolean("enabled", false); }
+    static void setEnabled(Context c, boolean on) { prefs(c).edit().putBoolean("enabled", on).apply(); }
+
     static void addPlay(Context c, String gameFile, long ms) {
+        if (!enabled(c)) return;
         SharedPreferences p = prefs(c);
         p.edit().putLong("time:" + gameFile, p.getLong("time:" + gameFile, 0) + Math.max(0, ms))
                 .putLong("last:" + gameFile, System.currentTimeMillis()).apply();
     }
 
-    static long time(Context c, String gameFile) { return prefs(c).getLong("time:" + gameFile, 0); }
-    static long last(Context c, String gameFile) { return prefs(c).getLong("last:" + gameFile, 0); }
+    static long time(Context c, String gameFile) { return !enabled(c) ? 0 : prefs(c).getLong("time:" + gameFile, 0); }
+    static long last(Context c, String gameFile) { return !enabled(c) ? 0 : prefs(c).getLong("last:" + gameFile, 0); }
 
     /** "2 h 13 min", "25 min", "under a minute"; "" if never played. */
     static String duration(long ms) {

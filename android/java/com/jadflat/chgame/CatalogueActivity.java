@@ -55,6 +55,7 @@ public class CatalogueActivity extends Page {
     private TextView status;                              /* one line under the title: progress */
     private String statusText = "";
     private volatile boolean busy;
+    private final Set<Item> working = new HashSet<>();    /* games being fetched now: their button says so */
     private final Map<String, JSONObject> releases = new HashMap<>();   /* "owner/repo" -> its latest GitHub release */
     private final List<Item> found = new ArrayList<>();   /* new releases from the developers, not in the list */
     private int dupSets;                                  /* games in the folder more than once */
@@ -213,6 +214,10 @@ public class CatalogueActivity extends Page {
             boolean in = installed(it), up = in && update(it) != null;
             String summary = it.description + (it.author.isEmpty() ? "" : "\nBy " + it.author)
                     + (it.licence.isEmpty() ? "" : " · " + it.licence);
+            if (working.contains(it)) {
+                row(it.name, summary, up ? "Updating…" : "Getting…", null);
+                return;
+            }
             row(it.name, summary, up ? "Update" : in ? "Installed" : "Get",
                     up ? () -> doUpdate(it) : in ? null : () -> get(it));
         }
@@ -243,12 +248,14 @@ public class CatalogueActivity extends Page {
             if (!Files.isGame(f[0])) continue;
             Files.Entry e = chgIn(it, f);
             String old = e == null ? null : haveVersion.get(e.path);
+            /* the release tag need not match the .CHG's own header version: what this app fetched last counts as current */
+            if (it.version.equals(prefs.getString("got:" + f[0].toUpperCase(Locale.ROOT), null))) continue;
             if (old != null && !it.version.isEmpty() && newer(it.version, old)) return e;
         }
         return null;
     }
 
-    private static boolean newer(String cat, String old) {
+    static boolean newer(String cat, String old) {
         cat = cat.trim().replaceFirst("^[vV]", "");
         old = old.trim().replaceFirst("^[vV]", "");
         if (cat.equals(old)) return false;
@@ -344,7 +351,7 @@ public class CatalogueActivity extends Page {
     /* The list                                                           */
     /* ---------------------------------------------------------------- */
 
-    private static String readAll(InputStream in, int max) throws IOException {
+    static String readAll(InputStream in, int max) throws IOException {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         byte[] buf = new byte[8192];
         for (int n; (n = in.read(buf)) > 0; ) {
@@ -607,7 +614,11 @@ public class CatalogueActivity extends Page {
                                 open(link).disconnect();
                                 assets.put(new JSONObject().put("name", f[0]).put("browser_download_url", link));
                             } catch (IOException e) {
-                                /* not in that release */
+                                /* not under that name: a game file may be called otherwise (Game-1.4.1.chgame) */
+                                String other = Files.isGame(f[0]) ? Updates.findAsset(repo, tag) : null;
+                                if (other != null)
+                                    assets.put(new JSONObject().put("name", f[0]).put("browser_download_url",
+                                            "https://github.com/" + repo + "/releases/download/" + Uri.encode(tag) + "/" + other));
                             }
                         }
                     }
@@ -885,6 +896,7 @@ public class CatalogueActivity extends Page {
                             && a.optString("browser_download_url").startsWith("https://"))
                         url = a.optString("browser_download_url");
                 }
+                if (url == null && !Files.isGame(f[0])) { nf.add(f); continue; }      /* a data file the release lacks stays as listed */
                 if (url == null) { all = false; break; }
                 nf.add(new String[] { f[0], url, "" });
             }
@@ -901,7 +913,7 @@ public class CatalogueActivity extends Page {
     /* ---------------------------------------------------------------- */
 
     /** A GET to an https address, following redirects (GitHub sends releases to another host). */
-    private static HttpURLConnection open(String url) throws IOException {
+    static HttpURLConnection open(String url) throws IOException {
         for (int hops = 0; hops < 8; hops++) {
             if (!url.startsWith("https://")) throw new IOException("not https");
             HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
@@ -953,6 +965,8 @@ public class CatalogueActivity extends Page {
         busy = true;
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         say("Starting " + label + "…");
+        working.addAll(todo);
+        build();
         new Thread(() -> {
             String result = label + " is in your games folder";
             for (Item it : todo) {
@@ -960,6 +974,10 @@ public class CatalogueActivity extends Page {
                     String cn = null;
                     if (over != null) for (String[] f : it.files) if (Files.isGame(f[0])) { cn = f[0]; break; }
                     download(it, t, cn, over == null ? null : over.uri);
+                    for (String[] f : it.files) if (Files.isGame(f[0]))
+                        prefs.edit().putString("got:" + f[0].toUpperCase(Locale.ROOT), it.version).remove("upd:" + f[0].toUpperCase(Locale.ROOT)).apply();
+                    Updates.authors(this, prefs, t);
+                    makeMedia(it, t);
                 } catch (IOException e) {
                     String m = e.getMessage();
                     result = e instanceof java.net.UnknownHostException || e instanceof java.net.SocketTimeoutException
@@ -974,12 +992,42 @@ public class CatalogueActivity extends Page {
             final String msg = result;
             runOnUiThread(() -> {
                 busy = false;
+                working.clear();
                 getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
                 say("");
                 Saves.toast(this, msg);
                 scanFolder();     /* the game list rescans when you go back to it */
             });
         }, "catalogue-get").start();
+    }
+
+    /** Makes a cover (a screenshot taken once any card loading is done) for a game just fetched whose .CHG has no cart picture:
+     *  in the ES-DE media folder if one is set, else in a chgame/covers folder inside the games folder. */
+    private void makeMedia(Item it, Uri t) {
+        String m = prefs.getString("mediaTree", null);
+        Uri mt = m != null ? Uri.parse(m) : t;
+        ContentResolver cr = getContentResolver();
+        for (String[] f : it.files) {
+            if (!Files.isGame(f[0])) continue;
+            String base = Saves.base(f[0]);
+            Files.Entry game = null;
+            for (Files.Entry e : Files.list(cr, t))
+                if (e.path.substring(e.path.lastIndexOf('/') + 1).equalsIgnoreCase(f[0])) { game = e; break; }
+            if (game == null) continue;
+            Cart cart = Cart.read(cr, game.uri);
+            if (cart != null && cart.picture != null) continue;      /* it carries its own cart picture: nothing to do */
+            if (SnapMaker.names(cr, mt, "covers").contains(base + ".png")) continue;
+            final String line = "Making a cart picture for " + it.name + "…";
+            runOnUiThread(() -> say(line));
+            Preview.gameRunning = true;
+            try {
+                synchronized (Preview.CORE) {
+                    SnapMaker.cover(this, mt, game, f[0], cart, () -> false);
+                }
+            } finally {
+                Preview.gameRunning = false;
+            }
+        }
     }
 
     /** Every file of the game that is not in the folder yet, into the games folder; a message for the user. */
@@ -1002,20 +1050,39 @@ public class CatalogueActivity extends Page {
                 ByteArrayOutputStream mem = replace ? new ByteArrayOutputStream() : null;
                 if (!replace) doc = DocumentsContract.createDocument(cr, root, "application/octet-stream", f[0]);
                 if (!replace && doc == null) throw new IOException("cannot write to the games folder");
+                ByteArrayOutputStream pkg = null;           /* a .chgame package (zip) is held, then packed into the .CHG */
                 try (OutputStream out = replace ? mem : cr.openOutputStream(doc, "wt")) {
                     if (out == null) throw new IOException("cannot write to the games folder");
                     byte[] buf = new byte[1 << 16];
                     long got = 0, shown = 0;
                     for (int r; (r = in.read(buf)) > 0; ) {
+                        if (got == 0 && Files.isGame(f[0]) && r >= 4) {
+                            if (ChgPackage.isPackage(buf)) pkg = new ByteArrayOutputStream();
+                            else if (!(buf[0] == 'C' && buf[1] == 'H' && buf[2] == 'G' && buf[3] == '1'))
+                                throw new IOException("the release holds neither a .CHG nor a package");
+                        }
                         got += r;
                         if (got > (replace ? 16 << 20 : Files.MAX_FILE)) throw new IOException("file too big");
-                        out.write(buf, 0, r);
+                        if (pkg != null) pkg.write(buf, 0, r); else out.write(buf, 0, r);
                         long now = System.currentTimeMillis();
                         if (now - shown > 250) {
                             shown = now;
                             final String line = "Downloading " + label + ": "
                                     + (total > 0 ? (got * 100 / total) + "%" : (got >> 10) + " KB");
                             runOnUiThread(() -> say(line));
+                        }
+                    }
+                }
+                if (pkg != null) {
+                    byte[] chg = ChgPackage.toChg(pkg.toByteArray(), ChgPackage.coverFor(this, replace ? overDoc : null, f[0]));
+                    if (chg == null) throw new IOException("the package holds no game for this board");
+                    if (replace) {
+                        mem.reset();
+                        mem.write(chg, 0, chg.length);
+                    } else {
+                        try (OutputStream out = cr.openOutputStream(doc, "wt")) {
+                            if (out == null) throw new IOException("cannot write to the games folder");
+                            out.write(chg, 0, chg.length);
                         }
                     }
                 }

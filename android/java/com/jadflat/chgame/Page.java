@@ -36,7 +36,8 @@ abstract class Page extends Activity {
         scroll.setFillViewport(true);
         page = new LinearLayout(this);
         page.setOrientation(LinearLayout.VERTICAL);
-        page.setPadding(Ui.dp(this, 20), Ui.dp(this, 8), Ui.dp(this, 20), Ui.dp(this, 24));
+        int side = getResources().getConfiguration().screenWidthDp < 600 ? 6 : 20;      /* a phone upright: the cards use the width */
+        page.setPadding(Ui.dp(this, side), Ui.dp(this, 8), Ui.dp(this, side), Ui.dp(this, 24));
         scroll.addView(page);
         setContentView(scroll);
         Ui.edgeToEdge(this, scroll);
@@ -97,7 +98,7 @@ abstract class Page extends Activity {
         boolean named = name != null && !name.isEmpty();
         if (named) {
             TextView t = Ui.text(this, name, 14, Ui.PRIMARY, Ui.MEDIUM);
-            t.setPadding(Ui.dp(this, 20), Ui.dp(this, 20), Ui.dp(this, 20), Ui.dp(this, 8));
+            t.setPadding(Ui.dp(this, 14), Ui.dp(this, 20), Ui.dp(this, 14), Ui.dp(this, 8));
             page.addView(t);
         }
         card = new LinearLayout(this);
@@ -128,7 +129,7 @@ abstract class Page extends Activity {
         LinearLayout r = new LinearLayout(this);
         r.setOrientation(LinearLayout.HORIZONTAL);
         r.setGravity(Gravity.CENTER_VERTICAL);
-        r.setPadding(Ui.dp(this, 20 + 20 * indent), Ui.dp(this, 14), Ui.dp(this, 16), Ui.dp(this, 14));
+        r.setPadding(Ui.dp(this, 16 + 20 * indent), Ui.dp(this, 14), Ui.dp(this, 12), Ui.dp(this, 14));
         LinearLayout text = new LinearLayout(this);
         text.setOrientation(LinearLayout.VERTICAL);
         text.addView(Ui.text(this, title, 17, action != null ? Ui.ON_SURFACE : Ui.ON_SURFACE_VARIANT, Ui.REGULAR));

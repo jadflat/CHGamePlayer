@@ -64,6 +64,22 @@ public class OptionsActivity extends Page {
             prefs.edit().putBoolean("showHidden", !Options.showHidden(prefs)).apply();
             build();
         });
+        row("Games not installed", prefs.getBoolean("showNew", true)
+                ? "Shown in green with an Install button" : "Hidden: Get games still lists them", () -> {
+            prefs.edit().putBoolean("showNew", !prefs.getBoolean("showNew", true)).apply();
+            build();
+        });
+        row("Record play time", Stats.enabled(this)
+                ? "On: time played and last played are kept for each game" : "Off: nothing is recorded", () -> {
+            Stats.setEnabled(this, !Stats.enabled(this));
+            build();
+        });
+        int dismissed = Updates.dismissedCount(prefs);
+        row("Offer removed games again", dismissed == 0 ? "No removed or dismissed games" : dismissed + " removed or dismissed: offer them all again", () -> {
+            Updates.resetDismissed(prefs);
+            Saves.toast(this, "Removed games can be offered again");
+            build();
+        });
         if (hiddenCount > 0)
             row("Show all hidden games again", hiddenCount + " games", () -> Saves.confirm(this,
                     "Show all " + hiddenCount + " hidden games again?", () -> {

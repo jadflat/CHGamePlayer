@@ -132,6 +132,11 @@ final class Cart {
     private static Bitmap picture(byte[] d, int n) {
         int at = u32(d, 0x60), size = u32(d, 0x64);
         if (at <= 0 || size != PICTURE || at % 512 != 0 || at >= PICTURE_MAX_OFFSET || at + PICTURE > n) return null;
+        return decode(d, at);
+    }
+
+    /** The picture block (CHB1, 8,704 bytes) as a bitmap. */
+    static Bitmap decode(byte[] d, int at) {
         if (d[at] != 'C' || d[at + 1] != 'H' || d[at + 2] != 'B' || d[at + 3] != '1') return null;
         int[] pal = new int[16];
         for (int i = 0; i < 16; i++) {

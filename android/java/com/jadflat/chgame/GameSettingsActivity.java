@@ -78,7 +78,61 @@ public class GameSettingsActivity extends Page {
         section("ES-DE media");
         row(hasClip ? "Remake preview clip" : "Make preview clip", clipStatus != null ? clipStatus
                 : "Records a 15 s video, screenshot and cover for this game", this::makeClip);
+        section("Game");
+        String path = getIntent().getStringExtra("path") == null ? file : getIntent().getStringExtra("path");
+        boolean hid = Options.hidden(prefs).contains(path);
+        row(hid ? "Show game in the list again" : "Hide game", hid ? "Hidden now" : "Leave it out of the list (Options shows hidden games)", () -> {
+            boolean now = Options.toggleHidden(prefs, path);
+            android.widget.Toast.makeText(this, title + (now ? " hidden. Options shows hidden games." : " shown again"),
+                    android.widget.Toast.LENGTH_LONG).show();
+            build();
+        });
+        String repo = Updates.repoFor(this, prefs, file);
+        if (repo != null) row("Open on GitHub", "github.com/" + repo, () -> {
+            try {
+                startActivity(new Intent(Intent.ACTION_VIEW, android.net.Uri.parse("https://github.com/" + repo)));
+            } catch (Exception ex) {
+                android.widget.Toast.makeText(this, "No browser to open it", android.widget.Toast.LENGTH_LONG).show();
+            }
+        });
+        row("Remove game", "Delete the game file; you choose whether it can be downloaded again", this::confirmRemove);
         focus();
+    }
+
+    /** Asks, then deletes this game's file from the games folder; it may still be offered for download. */
+    private void confirmRemove() {
+        new android.app.AlertDialog.Builder(this, Ui.dialogTheme())
+                .setTitle("Remove " + title + "?")
+                .setMessage("The game file is deleted from the games folder. Its saves stay.\n\nKeep it available to download again?")
+                .setPositiveButton("Keep available", (dlg, w) -> removeGame(true))
+                .setNegativeButton("Don't offer", (dlg, w) -> removeGame(false))
+                .setNeutralButton("Cancel", null)
+                .show();
+    }
+
+    private void removeGame(boolean offerAgain) {
+        android.net.Uri t = uriPref("tree", true);
+        if (t == null) {
+            android.widget.Toast.makeText(this, "Choose the games folder in Options first", android.widget.Toast.LENGTH_LONG).show();
+            return;
+        }
+        new Thread(() -> {
+            boolean ok = false;
+            try {
+                for (Files.Entry e : Files.list(getContentResolver(), t))
+                    if (Files.isGame(e.path) && e.path.substring(e.path.lastIndexOf('/') + 1).equals(file)) {
+                        ok = android.provider.DocumentsContract.deleteDocument(getContentResolver(), e.uri);
+                        break;
+                    }
+            } catch (Exception ignored) { }
+            final boolean done = ok;
+            if (done) Updates.removed(this, prefs, file, title, offerAgain);
+            runOnUiThread(() -> {
+                android.widget.Toast.makeText(this, done ? title + " removed" : "Could not remove " + title,
+                        android.widget.Toast.LENGTH_LONG).show();
+                if (done) finish();
+            });
+        }).start();
     }
 
     private volatile boolean making;

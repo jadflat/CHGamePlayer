@@ -30,7 +30,7 @@
 #include "audio.h"
 #include "sdcard.h"
 
-#define CORE_VERSION    "0.5"
+#define CORE_VERSION    "0.5.1"
 #define AUDIO_RATE      48000
 #define FPS             60
 #define FRAME_CYCLES    (CHG_HCLK / FPS)
@@ -134,7 +134,7 @@ static const struct retro_variable vars[] = {
     { "chgame_dat_all", "Data files put on the card (on load); Off|All .DAT in folder" },
     { "chgame_cpu",    "CPU speed (frame rate unchanged); 100%|150%|200%|300%" },
 #ifdef CHG_JIT
-    { "chgame_jit",    "JIT recompiler (aarch64; same result as the interpreter, faster); On|Off" },
+    { "chgame_jit",    "JIT recompiler (aarch64, same result as the interpreter but faster); On|Off" },
 #endif
     { "chgame_colour", "Colour; Raw|LCD" },
     { "chgame_fps",    "FPS counter (game frames a second, top right); Off|On" },

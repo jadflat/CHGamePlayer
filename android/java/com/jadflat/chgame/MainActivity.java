@@ -1,5 +1,6 @@
 package com.jadflat.chgame;
 
+import org.json.JSONObject;
 import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
@@ -52,11 +53,13 @@ import java.util.concurrent.Executors;
  * Options, where everything else lives.
  */
 public class MainActivity extends Activity {
-    static final String VERSION = "0.63";
+    static final String VERSION = "0.93";
     static final String PREFS = "chgame";
 
     private SharedPreferences prefs;
-    private TextView count, version, artTitle, artInfo, artPlayed, artPort, dupBanner;
+    private TextView count, version, artTitle, artInfo, artPlayed, artPort, dupBanner, artUpdate;
+    private static boolean updatesChecked;       /* the quiet update check runs once each time the app starts */
+    static final int GREEN = 0xFF7FDB8F;
     private Preview preview;
     private TextView mute;
     private View[] headIcons;                                   /* the header buttons the pad can reach, left to right */
@@ -163,21 +166,34 @@ public class MainActivity extends Activity {
             if (isGroup(row)) { toggleGroup(row); return; }
             int g = gameAt(row);
             if (g < 0) return;
+            list.removeCallbacks(expandLater);
+            strip(false);           /* a press on a game opens its preview straight away */
             if (row == shownRow) play(g);
             else select(g, row);
+        });
+        list.setOnTouchListener((v, ev) -> {
+            int act = ev.getActionMasked();
+            fingerDown = act != android.view.MotionEvent.ACTION_UP && act != android.view.MotionEvent.ACTION_CANCEL;
+            if (!fingerDown && rowsPending) { rowsPending = false; adapter.notifyDataSetChanged(); }
+            if (portrait()) {       /* the strip stays small while a finger is on the list, and opens only after a pause */
+                list.removeCallbacks(expandLater);
+                if (act == android.view.MotionEvent.ACTION_UP || act == android.view.MotionEvent.ACTION_CANCEL)
+                    list.postDelayed(expandLater, EXPAND_AFTER);
+            }
+            return false;
         });
         list.setOnItemLongClickListener((p, v, row, id) -> {
             int g = gameAt(row);
             if (g >= 0) gameSettings(g, row);
             return g >= 0;
         });
-        /* portrait: the preview strip is a one-line bar while the list scrolls, whole again 600 ms after */
+        /* portrait: the preview strip is a one-line bar while the list scrolls, whole again 2 s after */
         list.setOnScrollListener(new AbsListView.OnScrollListener() {
             @Override public void onScrollStateChanged(AbsListView v, int state) {
                 if (!portrait()) return;
                 list.removeCallbacks(expandLater);
                 if (state != SCROLL_STATE_IDLE) strip(true);
-                else list.postDelayed(expandLater, 600);
+                else if (!fingerDown) list.postDelayed(expandLater, EXPAND_AFTER);
             }
             @Override public void onScroll(AbsListView v, int first, int visible, int total) { }
         });
@@ -241,6 +257,16 @@ public class MainActivity extends Activity {
                 LinearLayout.LayoutParams.WRAP_CONTENT);
         pp.setMargins(0, Ui.dp(this, 8), 0, 0);
         info.addView(artPort, pp);
+        artUpdate = Ui.text(this, "Update", 14, Ui.ON_PRIMARY, Ui.MEDIUM);
+        artUpdate.setBackground(Ui.rounded(this, GREEN, 8));
+        artUpdate.setTextColor(0xFF00391A);
+        artUpdate.setPadding(Ui.dp(this, 16), Ui.dp(this, 6), Ui.dp(this, 16), Ui.dp(this, 6));
+        artUpdate.setVisibility(View.GONE);
+        artUpdate.setOnClickListener(v -> updateSelected());
+        LinearLayout.LayoutParams up = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        up.setMargins(0, Ui.dp(this, 8), 0, 0);
+        info.addView(artUpdate, up);
         LinearLayout hints = new LinearLayout(this);
         hints.setOrientation(LinearLayout.HORIZONTAL);
         hints.setGravity(Gravity.CENTER);
@@ -277,6 +303,7 @@ public class MainActivity extends Activity {
     private int stripSide;                                      /* portrait: the strip's picture at full size */
     private boolean stripSmall;
     private android.animation.ValueAnimator stripAnim;
+    private static final int EXPAND_AFTER = 2000;      /* ms the list must rest before the preview strip opens */
     private final Runnable expandLater = () -> strip(false);
 
     /** Portrait: shrinks the strip to a one-line bar (small = true) or expands it, animated. */
@@ -460,11 +487,139 @@ public class MainActivity extends Activity {
         refresh();
         ((InputManager) getSystemService(INPUT_SERVICE)).registerInputDeviceListener(pads, null);
         offerTouch();
+        checkUpdates();
+    }
+
+    /** Once per start, quietly: which installed games have a newer release on GitHub (shown green). */
+    private void checkUpdates() {
+        Uri t = tree();
+        if (t == null) return;
+        fillAuthors(t);
+        if (updatesChecked) return;
+        updatesChecked = true;
+        new Thread(() -> {
+            boolean changed = Updates.seedBundled(this, prefs, VERSION);
+            if (System.currentTimeMillis() - prefs.getLong("newAt2", 0) > 6 * 3600_000L) {
+                try {
+                    changed |= Updates.discover(this, prefs, t);
+                    prefs.edit().putLong("newAt2", System.currentTimeMillis()).apply();
+                } catch (RuntimeException e) {
+                    return;
+                }
+            }
+            java.util.Set<String> seen = new HashSet<>(prefs.getStringSet("newSeen", new HashSet<>()));
+            Set<String> have = new HashSet<>();
+            for (Files.Entry f : Files.list(getContentResolver(), t)) have.add(fileName(f).toUpperCase(Locale.ROOT));
+            int fresh = 0;
+            String first = "";
+            for (JSONObject n : Updates.newGames(prefs)) {
+                if (have.contains(Updates.newFile(n).toUpperCase(Locale.ROOT)) || !seen.add(n.optString("repo"))) continue;
+                if (n.optBoolean("quiet")) continue;        /* bundled games are in the list without a notice */
+                if (fresh++ == 0) first = n.optString("name");
+            }
+            if (fresh > 0) prefs.edit().putStringSet("newSeen", seen).apply();
+            final String msg = fresh == 0 ? null : fresh == 1 ? "New game found: " + first + ". It is in the list in green."
+                    : fresh + " new games found. They are in the list in green.";
+            final boolean redraw = changed || fresh > 0;
+            if (redraw) runOnUiThread(() -> {
+                if (isFinishing()) return;
+                refresh();
+                if (msg != null && prefs.getBoolean("showNew", true)) android.widget.Toast.makeText(this, msg, android.widget.Toast.LENGTH_LONG).show();
+            });
+        }, "new-games").start();
+        new Thread(() -> {
+            boolean changed;
+            try {
+                changed = Updates.check(this, prefs, t);
+            } catch (RuntimeException e) {
+                return;
+            }
+            if (changed) runOnUiThread(() -> {
+                if (isFinishing()) return;
+                rowsChanged();
+                showSelected();
+            });
+        }, "update-check").start();
+    }
+
+    /** In the background: GitHub owners for games whose header has no author (on start, and when the list refreshes). */
+    private volatile boolean authorsBusy;
+    private void fillAuthors(Uri t) {
+        if (authorsBusy) return;
+        authorsBusy = true;
+        new Thread(() -> {
+            boolean changed = false;
+            try {
+                changed = Updates.authors(this, prefs, t);
+            } catch (RuntimeException e) {
+                /* try again next time */
+            } finally {
+                authorsBusy = false;
+            }
+            if (changed) runOnUiThread(() -> {
+                if (isFinishing()) return;
+                rowsChanged();
+                showSelected();
+            });
+        }, "authors").start();
+    }
+
+    /** The right panel's Update button: fetches the new .CHG over the selected game's file. */
+    private void updateSelected() {
+        if (shown < 0 || shown >= games.size()) return;
+        Files.Entry e = games.get(shown);
+        if (isNew(e)) { installNew(e); return; }
+        String file = fileName(e);
+        artUpdate.setEnabled(false);
+        artUpdate.setText("Updating…");
+        new Thread(() -> {
+            String err = Updates.apply(this, prefs, e, file);
+            runOnUiThread(() -> {
+                artUpdate.setEnabled(true);
+                if (isFinishing()) return;
+                Saves.toast(this, err == null ? displayTitle(e) + " updated" : "Could not update: " + err);
+                if (err == null) {
+                    carts.remove(e.uri);
+                    refresh();
+                } else showSelected();
+            });
+        }, "update-game").start();
+    }
+
+    /** A game found on GitHub from a developer already here: listed, not in the folder yet. */
+    private static boolean isNew(Files.Entry e) {
+        return "chgnew".equals(e.uri.getScheme());
+    }
+
+    private JSONObject newInfo(Files.Entry e) {
+        String repo = e.uri.getSchemeSpecificPart().replaceFirst("^/+", "");
+        for (JSONObject n : Updates.newGames(prefs)) if (repo.equals(n.optString("repo"))) return n;
+        return null;
+    }
+
+    /** The panel's Install button for a new game. */
+    private void installNew(Files.Entry e) {
+        JSONObject n = newInfo(e);
+        Uri t = tree();
+        if (n == null || t == null) return;
+        artUpdate.setEnabled(false);
+        artUpdate.setText("Installing…");
+        new Thread(() -> {
+            String err = Updates.install(this, prefs, t, n);
+            runOnUiThread(() -> {
+                artUpdate.setEnabled(true);
+                if (isFinishing()) return;
+                Saves.toast(this, err == null ? displayTitle(e) + " installed" : "Could not install: " + err);
+                if (err == null) refresh(); else showSelected();
+            });
+        }, "install-game").start();
     }
 
     @Override
     protected void onPause() {
         super.onPause();
+        fingerDown = false;         /* the touch may never report its end (a long press opened another page) */
+        if (rowsPending) { rowsPending = false; adapter.notifyDataSetChanged(); }
         preview.stop();
         if (shown >= 0 && shown < games.size() && shownRow >= 0) {
             SharedPreferences.Editor ed = prefs.edit().putString("lastPath", games.get(shown).path);
@@ -539,6 +694,7 @@ public class MainActivity extends Activity {
         super.onDestroy();
         preview.shutdown();
         reader.shutdownNow();
+        shooter.shutdownNow();
     }
 
     private Uri tree() {
@@ -555,6 +711,8 @@ public class MainActivity extends Activity {
     /* ---------------------------------------------------------------- */
 
     private void refresh() {
+        Uri authT = tree();
+        if (authT != null) fillAuthors(authT);
         Uri t = tree();
         if (t == null) {
             games.clear();
@@ -638,6 +796,19 @@ public class MainActivity extends Activity {
             int c = displayTitle(a).compareToIgnoreCase(displayTitle(b));
             return c != 0 ? c : a.path.compareToIgnoreCase(b.path);
         });
+        Set<String> have = new HashSet<>();
+        for (Files.Entry e : games) have.add(fileName(e).toUpperCase(Locale.ROOT));
+        for (JSONObject n : prefs.getBoolean("showNew", true) ? Updates.newGames(prefs) : new java.util.ArrayList<JSONObject>()) {
+            String file = Updates.newFile(n);
+            if (!have.add(file.toUpperCase(Locale.ROOT))) continue;
+            if (hidden.contains(file)) {
+                hiddenCount++;
+                if (!showHidden) continue;
+            }
+            Files.Entry e = new Files.Entry(file, Uri.parse("chgnew:" + n.optString("repo")), 0, System.currentTimeMillis());
+            synchronized (titles) { titles.put(e.uri, n.optString("name", file)); }
+            games.add(e);
+        }
         favs = Options.favourites(prefs);
         buildRows();
         count.setText(games.size() + (games.size() == 1 ? " game" : " games")
@@ -999,6 +1170,7 @@ public class MainActivity extends Activity {
 
     private void startPreview() {
         if (shown < 0 || shown >= games.size()) return;
+        if (isNew(games.get(shown))) { preview.stop(); return; }
         previewing = true;
         String fn = fileName(games.get(shown));
         String mode = Options.previewMode(prefs, fn);
@@ -1021,10 +1193,11 @@ public class MainActivity extends Activity {
 
     /** "author · v1.0", once the cart has been read. */
     private String details(Files.Entry e) {
+        if (isNew(e)) { JSONObject n = newInfo(e); return "New · by " + (n == null ? "GitHub" : n.optString("owner")); }
         Cart c = cart(e);
         StringBuilder s = new StringBuilder();
         if (c != null) {
-            s.append(c.credit());
+            s.append(c.credit().isEmpty() ? Updates.owner(prefs, fileName(e)) : c.credit());
             if (!c.version.isEmpty()) s.append(s.length() > 0 ? " · " : "").append("v").append(c.version);
             if (c.portedFrom != null) s.append(s.length() > 0 ? " · " : "").append(c.portedFrom);
         }
@@ -1044,7 +1217,7 @@ public class MainActivity extends Activity {
                 runOnUiThread(() -> {
                     if (isFinishing()) return;
                     if (read != null) carts.put(e.uri, read);
-                    adapter.notifyDataSetChanged();
+                    rowsChanged();
                     if (shown >= 0 && shown < games.size() && games.get(shown).uri.equals(e.uri)) showSelected();
                 });
             });
@@ -1054,10 +1227,13 @@ public class MainActivity extends Activity {
 
     /** The cart's picture; with none built in, the game's ES-DE title screenshot (loaded in the background). */
     private Bitmap pic(Files.Entry e, Cart c) {
+        if (e != null && isNew(e)) return newPic(e);
         if (c == null || e == null) return null;
         if (c.picture != null) return c.picture;
+        Bitmap kept = bundledPic(fileName(e));
+        if (kept != null) return kept;
         String base = Saves.base(fileName(e)), m = prefs.getString("mediaTree", null);
-        if (m == null) return null;
+        if (m == null) return card(displayTitle(e));
         Bitmap b = snaps.get(base);
         if (b == null && snapTried.add(base)) {
             reader.execute(() -> {
@@ -1066,11 +1242,155 @@ public class MainActivity extends Activity {
                 runOnUiThread(() -> {
                     if (isFinishing()) return;
                     snaps.put(base, got);
-                    adapter.notifyDataSetChanged();
+                    rowsChanged();
                     if (shown >= 0 && shown < games.size() && fileName(games.get(shown)).equals(fileName(e))) showSelected();
                 });
             });
         }
+        return b != null ? b : card(displayTitle(e));
+    }
+
+    /** A plain 128x64 card with the game's name, for a game with no cart picture. */
+    private Bitmap card(String title) {
+        Bitmap b = Bitmap.createBitmap(128, 64, Bitmap.Config.ARGB_8888);
+        Canvas g = new Canvas(b);
+        g.drawColor(Color.rgb(24, 32, 64));
+        Paint p = new Paint();
+        p.setStyle(Paint.Style.STROKE);
+        p.setColor(Color.rgb(90, 110, 190));
+        g.drawRect(2, 2, 125, 61, p);
+        p.setStyle(Paint.Style.FILL);
+        p.setColor(Color.WHITE);
+        p.setTextAlign(Paint.Align.CENTER);
+        p.setTextSize(11);
+        p.setFakeBoldText(true);
+        String[] words = (title == null ? "" : title).split(" ");
+        java.util.List<String> lines = new java.util.ArrayList<>();
+        String cur = "";
+        for (String w : words) {
+            String t = cur.isEmpty() ? w : cur + " " + w;
+            if (p.measureText(t) > 116 && !cur.isEmpty()) { lines.add(cur); cur = w; } else cur = t;
+        }
+        lines.add(cur);
+        if (lines.size() > 3) lines = lines.subList(0, 3);
+        float y = 32 - (lines.size() - 1) * 7 + 4;
+        for (String l : lines) { g.drawText(l, 64, y, p); y += 14; }
+        return b;
+    }
+
+    private final Map<String, Bitmap> newPics = new HashMap<>();     /* pictures of not-installed games, by repo; null: none */
+    private final Set<String> newPicTried = java.util.Collections.synchronizedSet(new HashSet<>());
+    private final ExecutorService shooter = Executors.newSingleThreadExecutor(r -> { Thread t = new Thread(r, "shooter"); t.setDaemon(true); return t; });      /* frame-taking runs apart from the reader's quick jobs */
+
+    /** A not-installed game's cart picture: the bundled file's, else the start of the release's .CHG (fetched once, kept in the cache). */
+    private Bitmap newPic(Files.Entry e) {
+        JSONObject n = newInfo(e);
+        if (n == null) return null;
+        String repo = n.optString("repo");
+        Bitmap b = newPics.get(repo);
+        if (b != null || !newPicTried.add(repo)) return b;
+        final String title = displayTitle(e);
+        reader.execute(() -> {
+            byte[] block = null;
+            java.io.File cache = new java.io.File(getCacheDir(), "newpic-" + repo.replace('/', '_') + ".bin");
+            try {
+                if (cache.exists()) {
+                    block = cache.length() == Cart.PICTURE ? java.nio.file.Files.readAllBytes(cache.toPath()) : null;
+                } else {
+                    byte[] whole = new byte[Cart.PICTURE_MAX_OFFSET + Cart.PICTURE];
+                    int len = 0;
+                    String local = n.optString("local");
+                    java.net.HttpURLConnection h = null;
+                    try (java.io.InputStream in = !local.isEmpty() ? getAssets().open(local)
+                            : (h = CatalogueActivity.open("https://github.com/" + repo + "/releases/latest/download/"
+                                    + Uri.encode(n.optString("asset")))).getInputStream()) {
+                        for (int r; len < whole.length && (r = in.read(whole, len, whole.length - len)) > 0; ) len += r;
+                    } finally {
+                        if (h != null) h.disconnect();
+                    }
+                    block = ChgPackage.pictureOf(java.util.Arrays.copyOf(whole, len));
+                    try (java.io.FileOutputStream o = new java.io.FileOutputStream(cache)) {
+                        if (block != null) o.write(block);
+                    }
+                }
+            } catch (Exception ex) {
+                newPicTried.remove(repo);       /* no network now: try again later */
+                return;
+            }
+            Bitmap decoded = block == null ? null : Cart.decode(block, 0);
+            if (decoded != null) { newPicDone(repo, decoded); return; }
+            if (shooter.isShutdown()) return;
+            try { shooter.execute(() -> {         /* none in the release: download the game and take a frame */
+                if (Preview.gameRunning) { newPicTried.remove(repo); return; }      /* a game is playing: later */
+                Bitmap g = generatedPic(n, repo);
+                if (g == null && !newPicTried.contains(repo)) return;       /* cut short or no network: try again later */
+                newPicDone(repo, g != null ? g : card(title));      /* still none: a plain card with the name */
+            }); } catch (java.util.concurrent.RejectedExecutionException gone) { /* the screen was closed */ }
+        });
+        return null;
+    }
+
+    private void newPicDone(String repo, Bitmap got) {
+        runOnUiThread(() -> {
+            if (isFinishing()) return;
+            newPics.put(repo, got);
+            rowsChanged();
+            if (shown >= 0 && shown < games.size() && isNew(games.get(shown))) showSelected();
+        });
+    }
+
+    /** Downloads the game (a .CHG or a .chgame package), runs it for 5 s and keeps that frame as its picture (cached as a PNG). */
+    private Bitmap generatedPic(JSONObject n, String repo) {
+        java.io.File shot = new java.io.File(getCacheDir(), "newshot-" + repo.replace('/', '_') + ".png");
+        if (shot.exists()) return shot.length() == 0 ? null : android.graphics.BitmapFactory.decodeFile(shot.getPath());      /* empty: this game never drew */
+        java.io.File game = new java.io.File(getCacheDir(), "newgame.chg");
+        try {
+            java.io.ByteArrayOutputStream mem = new java.io.ByteArrayOutputStream();
+            String local = n.optString("local");
+            java.net.HttpURLConnection h = null;
+            try (java.io.InputStream in = !local.isEmpty() ? getAssets().open(local)
+                    : (h = CatalogueActivity.open("https://github.com/" + repo + "/releases/latest/download/"
+                            + Uri.encode(n.optString("asset")))).getInputStream()) {
+                byte[] buf = new byte[1 << 16];
+                for (int r; (r = in.read(buf)) > 0; ) {
+                    mem.write(buf, 0, r);
+                    if (mem.size() > 8 << 20) return null;
+                }
+            } finally {
+                if (h != null) h.disconnect();
+            }
+            byte[] d = mem.toByteArray();
+            if (ChgPackage.isPackage(d)) d = ChgPackage.toChg(d);
+            if (d == null) return null;
+            try (java.io.FileOutputStream o = new java.io.FileOutputStream(game)) { o.write(d); }
+            Bitmap b;
+            synchronized (Preview.CORE) { b = Preview.gameRunning ? null : SnapMaker.frame(this, game, "NEWGAME.CHG", () -> Preview.gameRunning); }
+            if (b == null) {
+                if (!Preview.gameRunning) new java.io.FileOutputStream(shot).close();      /* never drew (not just cut short by a game starting) */
+                else newPicTried.remove(repo);
+                return null;
+            }
+            try (java.io.FileOutputStream o = new java.io.FileOutputStream(shot)) {
+                b.compress(Bitmap.CompressFormat.PNG, 100, o);
+            }
+            return b;
+        } catch (Exception ex) {
+            newPicTried.remove(repo);       /* no network now: try again later */
+            return null;
+        } finally {
+            game.delete();
+        }
+    }
+
+    private final Map<String, Bitmap> bundled = new HashMap<>();    /* pictures of bundled games, by file name; null: none */
+
+    /** A game file with no picture of its own (packed from a .chgame release) shows the bundled copy's. */
+    private Bitmap bundledPic(String file) {
+        String k = file.toUpperCase(Locale.ROOT);
+        if (bundled.containsKey(k)) return bundled.get(k);
+        byte[] p = ChgPackage.coverFor(this, null, file);
+        Bitmap b = p == null ? null : Cart.decode(p, 0);
+        bundled.put(k, b);
         return b;
     }
 
@@ -1090,12 +1410,14 @@ public class MainActivity extends Activity {
             artInfo.setText(g.open ? "A closes the group" : "A opens the group");
             hintRow.setVisibility(View.GONE);
             artPort.setVisibility(View.GONE);
+            artUpdate.setVisibility(View.GONE);
             if (artPlayed != null) artPlayed.setVisibility(View.GONE);
             return;
         }
         if (shown < 0 || shown >= games.size()) {
             boolean folder = tree() != null;
             art.set(null);
+            artUpdate.setVisibility(View.GONE);
             artTitle.setText(folder && games.isEmpty() ? "No games here" : "");
             artInfo.setText(folder && games.isEmpty() ? "Put .CHG files in the games folder" : "");
             artPort.setVisibility(View.GONE);
@@ -1103,14 +1425,32 @@ public class MainActivity extends Activity {
         }
         hintRow.setVisibility(portrait() || getResources().getConfiguration().screenHeightDp < 420 ? View.GONE : View.VISIBLE);
         Files.Entry e = games.get(shown);
+        if (isNew(e)) {
+            JSONObject n = newInfo(e);
+            art.set(newPic(e));
+            artTitle.setText(displayTitle(e));
+            artInfo.setText("New game by " + (n == null ? "GitHub" : n.optString("owner")) + (n == null ? "" : " · " + n.optString("tag"))
+                    + (n == null || n.optString("desc").isEmpty() ? "" : "\n" + n.optString("desc")));
+            artPort.setVisibility(View.GONE);
+            if (artPlayed != null) artPlayed.setVisibility(View.GONE);
+            artUpdate.setText("Install");
+            artUpdate.setVisibility(View.VISIBLE);
+            return;
+        }
         Cart c = cart(e);
         art.set(pic(e, c));
         artTitle.setText(displayTitle(e));
         StringBuilder d = new StringBuilder();
         if (c != null) {
             if (!c.credit().isEmpty()) d.append("by ").append(c.credit());
-            if (!c.version.isEmpty()) d.append(d.length() > 0 ? " · " : "").append("v").append(c.version);
-            if (c.picture == null) d.append(d.length() > 0 ? " · " : "").append("No cartridge picture");
+            String ver = c.version;
+            if (ver.isEmpty()) {      /* none in the header: the version it was installed at, else the release it matches */
+                String key = fileName(e).toUpperCase(Locale.ROOT), got = prefs.getString("got:" + key, null);
+                if (got != null && got.isEmpty()) got = null;
+                String latest = prefs.getString("ver:" + key, "");
+                ver = got != null ? got.replaceFirst("^[vV]", "") : prefs.contains("upd:" + key) ? (latest.isEmpty() ? "" : "older than " + latest) : latest;
+            }
+            if (!ver.isEmpty()) d.append(d.length() > 0 ? " · " : "").append(ver.matches("\\d{4}-.*|older.*") ? "" : "v").append(ver);
         }
         if (hidden.contains(e.path)) d.append(d.length() > 0 ? " · " : "").append("Hidden");
         long time = Stats.time(this, fileName(e)), last = Stats.last(this, fileName(e));
@@ -1119,6 +1459,9 @@ public class MainActivity extends Activity {
         if (portrait()) { artPlayed.setText(pl); artPlayed.setVisibility(pl.length() > 0 ? View.VISIBLE : View.GONE); }
         else if (pl.length() > 0) d.append("\n").append(pl);
         artInfo.setText(d);
+        String[] upd = Updates.pending(prefs, fileName(e));
+        artUpdate.setText(upd == null ? "Update" : "Update to " + upd[0]);
+        artUpdate.setVisibility(upd == null ? View.GONE : View.VISIBLE);
         if (c != null && c.portedFrom != null) {
             artPort.setText(c.portedFrom + " port" + (c.porter != null ? ", ported by " + c.porter : ""));
             artPort.setVisibility(View.VISIBLE);
@@ -1131,6 +1474,7 @@ public class MainActivity extends Activity {
         if (pos < 0 || pos >= games.size()) return;
         Ui.sfx(this, true);
         Files.Entry e = games.get(pos);
+        if (isNew(e)) { installNew(e); return; }
         /* a game that names card files not in the games folder: say so, and let the player start anyway */
         Cart c = carts.get(e.uri);
         if (c == null) {
@@ -1199,12 +1543,19 @@ public class MainActivity extends Activity {
         refresh();
     }
 
+    private boolean fingerDown, rowsPending;
+
+    /** The rows changed in the background (a picture arrived): redrawn once the finger is up, or it would cancel a long press. */
+    private void rowsChanged() {
+        if (fingerDown) rowsPending = true; else adapter.notifyDataSetChanged();
+    }
+
     /** A long press on a touch screen: the game's settings page. */
     private void gameSettings(int pos, int row) {
         select(pos, row);
         Files.Entry e = games.get(pos);
         startActivity(new Intent(this, GameSettingsActivity.class)
-                .putExtra("file", fileName(e)).putExtra("title", displayTitle(e)));
+                .putExtra("file", fileName(e)).putExtra("path", e.path).putExtra("title", displayTitle(e)));
     }
 
     /** What can be done with this game (the menu: long press is now the settings page). */
@@ -1221,9 +1572,9 @@ public class MainActivity extends Activity {
                     else if (which == 1) toggleFavourite(pos);
                     else if (which == 2) toggleHidden(pos);
                     else if (which == 3) startActivity(new Intent(this, SavesActivity.class)
-                            .putExtra("file", fileName(e)).putExtra("title", displayTitle(e)));
+                            .putExtra("file", fileName(e)).putExtra("path", e.path).putExtra("title", displayTitle(e)));
                     else if (which == 4) startActivity(new Intent(this, GameSettingsActivity.class)
-                            .putExtra("file", fileName(e)).putExtra("title", displayTitle(e)));
+                            .putExtra("file", fileName(e)).putExtra("path", e.path).putExtra("title", displayTitle(e)));
                     else about(e);
                 })
                 .show();
@@ -1554,6 +1905,7 @@ public class MainActivity extends Activity {
             Cart c = cart(e);
             r.thumb.set(pic(e, c));
             r.title.setText(displayTitle(e));
+            if (isNew(e) || Updates.pending(prefs, fileName(e)) != null) r.title.setTextColor(GREEN); else r.title.setTextColor(r.strong);
             String d = details(e);
             r.sub.setText(d);
             r.sub.setVisibility(d.isEmpty() ? View.GONE : View.VISIBLE);
@@ -1615,6 +1967,7 @@ public class MainActivity extends Activity {
     private static final class Row extends LinearLayout {
         final ArtView thumb;
         final TextView title, sub, star;
+        final ColorStateList strong;
 
         Row(Context c) {
             super(c);
@@ -1628,7 +1981,7 @@ public class MainActivity extends Activity {
             text.setOrientation(VERTICAL);
             text.setPadding(Ui.dp(c, 14), 0, 0, 0);
             text.setDuplicateParentStateEnabled(true);
-            ColorStateList strong = new ColorStateList(
+            strong = new ColorStateList(
                     new int[][] { { android.R.attr.state_activated }, { android.R.attr.state_selected }, {} },
                     new int[] { Ui.ON_PRIMARY_CONTAINER, Ui.ON_PRIMARY_CONTAINER, Ui.ON_SURFACE });
             title = Ui.text(c, "", 17, Ui.ON_SURFACE, Ui.MEDIUM);

@@ -69,6 +69,7 @@ final class SnapMaker {
         Bitmap shotBmp = null;
         try {
             File g = Files.copyGame(c, game.uri, fileName);
+            Files.importData(c);
             File saves = new File(work, "saves");
             saves.mkdirs();
             /* no save: as the game starts the first time (with one it may sit on a continue screen) */
@@ -109,27 +110,106 @@ final class SnapMaker {
     /* Recording                                                          */
     /* ---------------------------------------------------------------- */
 
-    /** Runs the game to its first screen, then records; returns the screenshot frame (null: none). */
-    private static Bitmap record(File out, Cancel cancel) throws IOException {
-        int[] px = new int[128 * 128];
-        short[] sound = new short[4096 * 2];
+    /** Runs the game to its first screen (waiting out a card-loading screen); false if it never drew one. */
+    private static boolean settle(int[] px, short[] sound, Cancel cancel) {
         /* up to 20 s of start-up (some games load from the card first) */
         for (int f = 0; f < 20 * 60 && !Native.screenReady(); f++) {
-            if (cancel.cancelled()) return null;
+            if (cancel.cancelled()) return false;
             Native.frame(0, px, sound);
         }
-        if (!Native.screenReady()) return null;
+        if (!Native.screenReady()) return false;
         /* a game that streams from the card shows its loading screen first: wait until
            no block has been read for 2 s of emulated time (at most 30 s) */
         long reads = Native.sdReads();
         int quiet = 0;
         for (int f = 0; f < 30 * 60 && quiet < 2 * 60 && reads > 0; f++) {
-            if (cancel.cancelled()) return null;
+            if (cancel.cancelled()) return false;
             Native.frame(0, px, sound);
             long r = Native.sdReads();
             quiet = r == reads ? quiet + 1 : 0;
             reads = r;
         }
+
+        return true;
+    }
+
+    /** A frame 5 s into a .CHG on disk (for a game with no cart picture); null if it never drew one. Caller holds Preview.CORE. */
+    static Bitmap frame(Context c, File chg, String fileName, Cancel cancel) {
+        File work = new File(c.getCacheDir(), "snap");
+        File saves = new File(work, "saves");
+        saves.mkdirs();
+        File[] old = saves.listFiles();
+        if (old != null) for (File o : old) o.delete();
+        Options.apply(c.getSharedPreferences(MainActivity.PREFS, Context.MODE_PRIVATE), fileName);
+        if (!Native.start(chg.getPath(), new File(c.getFilesDir(), "sys").getPath(), saves.getPath(),
+                new File(work, "log.txt").getPath()))
+            return null;
+        try {
+            int[] px = new int[128 * 128];
+            short[] sound = new short[4096 * 2];
+            if (!settle(px, sound, cancel)) return null;
+            for (int f = 0; f < SHOT_AT * 60; f++) {
+                if (cancel.cancelled()) return null;
+                Native.frame(0, px, sound);
+            }
+            Bitmap b = Bitmap.createBitmap(128, 128, Bitmap.Config.ARGB_8888);
+            b.setPixels(px, 0, 128, 0, 0, 128, 128);
+            return b;
+        } finally {
+            Native.stop();
+        }
+    }
+
+    /** Only the cover: the .CHG's own cart picture if it has one, else a frame 5 s in; null when done, or what went wrong. */
+    static String cover(Context c, Uri mediaTree, Files.Entry game, String fileName, Cart cart, Cancel cancel) {
+        String base = Saves.base(fileName);
+        File work = new File(c.getCacheDir(), "snap");
+        work.mkdirs();
+        File cover = new File(work, "cover.png");
+        try {
+            if (cart != null && cart.picture != null) {
+                savePng(scale(cart.picture), cover);
+            } else {
+                File g = Files.copyGame(c, game.uri, fileName);
+                Files.importData(c);
+                File saves = new File(work, "saves");
+                saves.mkdirs();
+                File[] old = saves.listFiles();
+                if (old != null) for (File o : old) o.delete();
+                Options.apply(c.getSharedPreferences(MainActivity.PREFS, Context.MODE_PRIVATE), fileName);
+                if (!Native.start(g.getPath(), new File(c.getFilesDir(), "sys").getPath(), saves.getPath(),
+                        new File(work, "log.txt").getPath()))
+                    return "would not start";
+                Bitmap shot = null;
+                try {
+                    int[] px = new int[128 * 128];
+                    short[] sound = new short[4096 * 2];
+                    if (settle(px, sound, cancel)) {
+                        for (int f = 0; f < SHOT_AT * 60; f++) Native.frame(0, px, sound);
+                        shot = Bitmap.createBitmap(scaled(px), SIZE, SIZE, Bitmap.Config.ARGB_8888);
+                    }
+                } finally {
+                    Native.stop();
+                }
+                if (shot == null) return "never drew its screen";
+                savePng(shot, cover);
+            }
+            ContentResolver cr = c.getContentResolver();
+            String chgame = dir(cr, mediaTree, DocumentsContract.getTreeDocumentId(mediaTree), "chgame");
+            put(cr, mediaTree, dir(cr, mediaTree, chgame, "covers"), base + ".png", "image/png", cover);
+            return null;
+        } catch (Exception e) {
+            return e.getClass().getSimpleName() + (e.getMessage() != null ? ": " + e.getMessage() : "");
+        } finally {
+            cover.delete();
+        }
+    }
+
+    /** Runs the game to its first screen, then records; returns the screenshot frame (null: none). */
+    private static Bitmap record(File out, Cancel cancel) throws IOException {
+        int[] px = new int[128 * 128];
+        short[] sound = new short[4096 * 2];
+        if (!settle(px, sound, cancel)) return null;
 
         MediaFormat vf = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, SIZE, SIZE);
         vf.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible);

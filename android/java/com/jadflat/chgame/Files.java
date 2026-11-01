@@ -107,6 +107,14 @@ final class Files {
         return stamps;
     }
 
+    /** The games folder's .DAT files into the SD folder, for a game run without GameActivity (preview, clips); quiet on failure. */
+    static void importData(Context ctx) {
+        try {
+            String t = ctx.getSharedPreferences(MainActivity.PREFS, Context.MODE_PRIVATE).getString("tree", null);
+            if (t != null) importCard(ctx, Uri.parse(t));
+        } catch (Exception ignored) { }
+    }
+
     /** Files the game changed or made in the SD folder, back into the picked folder. */
     static void exportCard(Context ctx, Uri tree, Map<String, Long> stamps) throws IOException {
         ContentResolver cr = ctx.getContentResolver();
