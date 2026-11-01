@@ -81,7 +81,6 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     private int rewindTick;                 /* frames of play since the last state */
     private TouchControls touch;            /* the touch pad over the picture */
     private boolean touchAuto;              /* Options: hidden on the first key event */
-    private Bitmap bezelBmp;                /* the handheld frame, drawn once per surface size (loop thread) */
     private volatile Bitmap scanBmp;        /* Options: scanlines (and CRT's vignette) over the picture, built per surface size */
     private String speedText = "";          /* the speed line (loop thread only) */
     private int speedFrames;                /* frames, and time in Native.frame, since the last speed line */
@@ -474,7 +473,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         glow.setFilterBitmap(true);
         glow.setAlpha(64);
         glow.setColorFilter(paint.getColorFilter());
-        boolean overlay = Options.overlay(sp), bezel = Options.bezel(sp);
+        boolean overlay = Options.overlay(sp);
         float dp = getResources().getDisplayMetrics().density;
         Paint speed = new Paint(Paint.ANTI_ALIAS_FLAG);     /* the speed line: white, dark shadow */
         speed.setTypeface(Typeface.MONOSPACE);
@@ -541,14 +540,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
                    in portrait, the top of the screen, as wide as it can be */
                 int side = pictureSide(c.getWidth(), c.getHeight());
                 int x = (c.getWidth() - side) / 2, y = portrait() ? 0 : (c.getHeight() - side) / 2;
-                if (bezel && (c.getWidth() - side) / 2 >= side / 3) {
-                    /* the handheld's frame, with room for the pad and buttons beside the picture */
-                    if (bezelBmp == null || bezelBmp.getWidth() != c.getWidth() || bezelBmp.getHeight() != c.getHeight())
-                        bezelBmp = buildBezel(c.getWidth(), c.getHeight(), x, y, side);
-                    c.drawBitmap(bezelBmp, 0, 0, null);
-                } else {
-                    c.drawColor(Color.BLACK);
-                }
+                c.drawColor(Color.BLACK);
                 Rect dst = new Rect(x, y, x + side, y + side);
                 c.drawBitmap(bmp, src, dst, paint);
                 if (crt) c.drawBitmap(bmp, src, dst, glow);
@@ -601,41 +593,6 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         speedFrames = 0;
         speedNanos = 0;
         speedSince = now;
-    }
-
-    /** The handheld's frame around the picture, drawn once per surface size: a dark body with
-     *  the picture in it, a darker screen border, a "CHGame" label, a d-pad left, A and B right. */
-    private static Bitmap buildBezel(int w, int h, int x, int y, int side) {
-        Bitmap bmp = Bitmap.createBitmap(w, h, Bitmap.Config.RGB_565);
-        Canvas c = new Canvas(bmp);
-        c.drawColor(Color.BLACK);
-        Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
-        int pad = side / 24, border = Math.max(1, side / 64), label = side / 10, margin = side / 32;
-        float top = y - pad, bottom = y + side + pad + label;
-        float cy = y + side / 2f;
-        p.setColor(0xFF2B2D31);
-        c.drawRoundRect(new RectF(margin, top, w - margin, bottom), side / 12f, side / 12f, p);
-        p.setColor(0xFF15161A);
-        c.drawRect(x - border, y - border, x + side + border, y + side + border, p);
-        p.setColor(0xFFB8BCC4);
-        p.setTextAlign(Paint.Align.CENTER);
-        p.setTextSize(label * 0.55f);
-        c.drawText("CHGame", x + side / 2f, y + side + pad + label * 0.75f, p);
-        /* the d-pad, in the room left of the picture */
-        float lx1 = x - pad, u = Math.min(lx1 - margin, bottom - top) / 4f, dx = (margin + lx1) / 2f;
-        p.setColor(0xFF3A3D42);
-        c.drawRect(dx - 1.5f * u, cy - 0.5f * u, dx + 1.5f * u, cy + 0.5f * u, p);
-        c.drawRect(dx - 0.5f * u, cy - 1.5f * u, dx + 0.5f * u, cy + 1.5f * u, p);
-        /* A (upper right) and B (lower left), in the room right of the picture */
-        float rx0 = x + side + pad, r = Math.min(w - margin - rx0, bottom - top) / 6f, bx = (rx0 + w - margin) / 2f;
-        float ay = cy - 0.6f * r, by = cy + 0.6f * r;
-        c.drawCircle(bx + r, ay, r, p);
-        c.drawCircle(bx - r, by, r, p);
-        p.setColor(0xFF8A8F98);
-        p.setTextSize(r);
-        c.drawText("A", bx + r, ay + 0.35f * r, p);
-        c.drawText("B", bx - r, by + 0.35f * r, p);
-        return bmp;
     }
 
     /** The scanlines over the picture, drawn once per surface size (main thread): a bitmap the size

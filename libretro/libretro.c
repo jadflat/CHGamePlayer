@@ -30,7 +30,7 @@
 #include "audio.h"
 #include "sdcard.h"
 
-#define CORE_VERSION    "0.5.1"
+#define CORE_VERSION    "0.5.2"
 #define AUDIO_RATE      48000
 #define FPS             60
 #define FRAME_CYCLES    (CHG_HCLK / FPS)

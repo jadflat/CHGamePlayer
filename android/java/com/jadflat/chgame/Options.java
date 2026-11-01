@@ -116,8 +116,6 @@ final class Options {
     static int touchOpacity(SharedPreferences p) { return Math.max(20, Math.min(100, p.getInt("touchOpacity", 100))); }
     /** true: a short haptic tick when a touch button goes down */
     static boolean vibrate(SharedPreferences p) { return p.getBoolean("vibrate", false); }
-    /** true: a CHGame-shaped frame beside the picture */
-    static boolean bezel(SharedPreferences p) { return p.getBoolean("bezel", false); }
     /** true: the speed overlay (fps, % of real speed and frame time) */
     static boolean overlay(SharedPreferences p) { return p.getBoolean("overlay", false); }
 

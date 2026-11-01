@@ -139,10 +139,6 @@ public class OptionsActivity extends Page {
             prefs.edit().putBoolean("panel", !Options.panelColours(prefs)).apply();
             build();
         });
-        row("Border", Options.bezel(prefs) ? "On: a CHGame-shaped frame beside the picture" : "Off", () -> {
-            prefs.edit().putBoolean("bezel", !Options.bezel(prefs)).apply();
-            build();
-        });
 
         section("Sound");
         row("Sound", Options.SOUND_NAMES[indexOf(Options.SOUNDS, Options.sound(prefs))],

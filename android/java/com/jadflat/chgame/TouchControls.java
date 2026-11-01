@@ -182,22 +182,28 @@ final class TouchControls extends View {
         arm = dp(21) * gs[G_DPAD];
         dead = dp(12) * gs[G_DPAD];
         slop = dp(10);
-        dpadX = (pt ? W * 0.26f : dp(20) + dp(66)) + fx[G_DPAD] * W;
-        dpadY = (pt ? cy0 : H - dp(20) - dp(66)) + fy[G_DPAD] * H;
+        /* landscape: the d-pad in the middle of the room left of the picture, A and B in the room right of it
+           (the picture is centred; with too little room they stay at the screen's edges) */
+        float side = pictureSide(false, Options.fill(prefs()), (int) W, (int) H);
+        float room = Math.max(0, (W - side) / 2);
+        float dpadC = Math.max(dp(20) + dp(66), room / 2);
+        float abC = Math.min(W - dp(22) - dp(30) - dp(34), W - room / 2);
+        dpadX = (pt ? W * 0.26f : dpadC) + fx[G_DPAD] * W;
+        dpadY = (pt ? cy0 : H - dp(100) - dp(66)) + fy[G_DPAD] * H;
 
         btnRA = dp(30) * gs[G_A];
         btnRB = dp(30) * gs[G_B];
-        aX = W - dp(22) - dp(30) - dp(68) + fx[G_A] * W; /* A: on the left, as on the board */
-        aY = (pt ? cy0 + dp(32) : H - dp(22) - dp(30)) + fy[G_A] * H;
-        bX = W - dp(22) - dp(30) + fx[G_B] * W;         /* B: to the right and higher */
-        bY = (pt ? cy0 - dp(32) : H - dp(22) - dp(30) - dp(40)) + fy[G_B] * H;
+        aX = (pt ? W - dp(22) - dp(30) - dp(68) : abC - dp(34)) + fx[G_A] * W; /* A: on the left, as on the board */
+        aY = (pt ? cy0 + dp(32) : H - dp(100) - dp(66) + dp(20)) + fy[G_A] * H;
+        bX = (pt ? W - dp(22) - dp(30) : abC + dp(34)) + fx[G_B] * W;         /* B: to the right and higher */
+        bY = (pt ? cy0 - dp(32) : H - dp(100) - dp(66) - dp(20)) + fy[G_B] * H;
 
         float sp = gs[G_PILLS];
         pillW = dp(64) * sp;
         pillH = dp(22) * sp;
         pillY = (pt ? Math.min(H - dp(16), cy0 + dp(66) * gs[G_DPAD] + dp(34)) : H - dp(26)) + fy[G_PILLS] * H;
-        selX = W / 2 + dp(50) * sp + fx[G_PILLS] * W;
-        startX = W / 2 - dp(50) * sp + fx[G_PILLS] * W;
+        selX = W / 2 - dp(50) * sp + fx[G_PILLS] * W;
+        startX = W / 2 + dp(50) * sp + fx[G_PILLS] * W;
 
         menuW = dp(64) * gs[G_MENU];
         menuH = dp(22) * gs[G_MENU];
