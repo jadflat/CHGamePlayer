@@ -16,6 +16,7 @@ import java.net.HttpURLConnection;
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Update check for the games already installed, run quietly when the app opens: each installed
@@ -145,6 +146,13 @@ final class Updates {
         ContentResolver cr = c.getContentResolver();
         Map<String, String[]> src = null;
         boolean changed = false;
+        Set<String> orphans = new java.util.HashSet<>();
+        for (Files.Entry e : Files.list(cr, tree)) {
+            if (!Files.isGame(e.path)) continue;
+            String file = e.path.substring(e.path.lastIndexOf('/') + 1).toUpperCase(Locale.ROOT);
+            if (prefs.contains("got:" + file) && (repoFor(c, prefs, file) == null || bareName(prefs, file))) orphans.add(file);
+        }
+        if (!orphans.isEmpty() && backfill(c, prefs, null, orphans)) changed = true;
         for (Files.Entry e : Files.list(cr, tree)) {
             if (!Files.isGame(e.path)) continue;
             String file = e.path.substring(e.path.lastIndexOf('/') + 1).toUpperCase(Locale.ROOT);
@@ -160,6 +168,96 @@ final class Updates {
             changed = true;
         }
         return changed;
+    }
+
+    /** Keeps a game installed from a developer's release in the found list, so Get games lists it and its repo
+     *  (author, "Open on GitHub", updates) is known. */
+    static void remember(SharedPreferences prefs, String repo, String file, String tag, String name, String desc) {
+        try {
+            JSONObject all = new JSONObject(prefs.getString("cat:found", "{\"games\":[]}"));
+            JSONArray games = all.getJSONArray("games");
+            for (int i = 0; i < games.length(); i++) {
+                JSONObject g = games.getJSONObject(i);
+                JSONArray fs = g.optJSONArray("files");
+                if (!repo.equals(g.optString("repo")) || fs == null) continue;
+                for (int k = 0; k < fs.length(); k++)
+                    if (file.equalsIgnoreCase(fs.getJSONObject(k).optString("name"))) {
+                        if (desc.isEmpty()) return;                 /* a better name and description than the file's */
+                        g.put("name", name).put("description", desc);
+                        prefs.edit().putString("cat:found", all.toString()).apply();
+                        return;
+                    }
+            }
+            String owner = repo.substring(0, repo.indexOf('/'));
+            games.put(new JSONObject().put("name", name).put("author", owner).put("developer", owner)
+                    .put("description", desc).put("licence", "").put("version", tag.replaceFirst("^[vV]", ""))
+                    .put("repo", repo).put("files", new JSONArray().put(new JSONObject().put("name", file)
+                            .put("url", "https://github.com/" + repo + "/releases/download/" + Uri.encode(tag) + "/" + Uri.encode(file)))));
+            prefs.edit().putString("cat:found", all.toString()).apply();
+        } catch (Exception e) {
+            /* not kept this time */
+        }
+    }
+
+    /** The found list holds this file under its file name as the game's name (kept by an earlier build): to be renamed. */
+    private static boolean bareName(SharedPreferences prefs, String file) {
+        try {
+            JSONArray games = new JSONObject(prefs.getString("cat:found", "{\"games\":[]}")).getJSONArray("games");
+            for (int i = 0; i < games.length(); i++) {
+                JSONObject g = games.getJSONObject(i);
+                JSONArray fs = g.optJSONArray("files");
+                for (int k = 0; fs != null && k < fs.length(); k++)
+                    if (file.equalsIgnoreCase(fs.getJSONObject(k).optString("name")))
+                        return g.optString("description", "").isEmpty() && file.replaceFirst("(?i)[.]chg$", "").equalsIgnoreCase(g.optString("name"));
+            }
+        } catch (Exception e) {
+            /* not bare */
+        }
+        return false;
+    }
+
+    /** Blocking: games installed from "new" offers before they were kept (a "got:" with no known repo): find
+     *  their repo among the "newdone:" ones by the release's file names, and keep them. True when any was. */
+    private static boolean backfill(Context c, SharedPreferences prefs, Map<String, String[]> unused, Set<String> orphans) {
+        boolean any = false;
+        for (String key : new java.util.ArrayList<>(prefs.getAll().keySet())) {
+            if (!key.startsWith("newdone:") || orphans.isEmpty()) continue;
+            String repo = key.substring(8);
+            if (!repo.matches("[\\w.-]+/[\\w.-]+")) continue;
+            try {
+                HttpURLConnection h = CatalogueActivity.open("https://api.github.com/repos/" + repo + "/releases/latest");
+                String body;
+                try (InputStream in = h.getInputStream()) {
+                    body = CatalogueActivity.readAll(in, 1 << 20);
+                } finally {
+                    h.disconnect();
+                }
+                JSONObject rel = new JSONObject(body);
+                String title = "", desc = "";
+                try {
+                    HttpURLConnection rh = CatalogueActivity.open("https://api.github.com/repos/" + repo);
+                    try (InputStream in = rh.getInputStream()) {
+                        desc = new JSONObject(CatalogueActivity.readAll(in, 1 << 20)).optString("description", "");
+                    } finally {
+                        rh.disconnect();
+                    }
+                } catch (Exception e) {
+                    /* no description */
+                }
+                for (String w : repo.substring(repo.indexOf('/') + 1).split("[-_.]+"))
+                    if (!w.isEmpty()) title += (title.isEmpty() ? "" : " ") + Character.toUpperCase(w.charAt(0)) + w.substring(1);
+                JSONArray assets = rel.optJSONArray("assets");
+                for (int i = 0; assets != null && i < assets.length(); i++) {
+                    String name = assets.getJSONObject(i).optString("name");
+                    if (!orphans.remove(name.toUpperCase(Locale.ROOT))) continue;
+                    remember(prefs, repo, name, rel.optString("tag_name"), title, desc);
+                    any = true;
+                }
+            } catch (Exception e) {
+                /* offline or rate limited: tried again next time */
+            }
+        }
+        return any;
     }
 
     /** The GitHub owner kept for a game with no author in its header, or "". */
@@ -477,6 +575,7 @@ final class Updates {
             }
             prefs.edit().putString("got:" + file.toUpperCase(Locale.ROOT), tag).remove("new:" + repo)
                     .putBoolean("newdone:" + repo, true).apply();
+            remember(prefs, repo, file, tag, n.optString("name", file), n.optString("desc", ""));
             return null;
         } catch (IOException | RuntimeException ex) {
             return ex.getMessage() == null ? "download failed" : ex.getMessage();
