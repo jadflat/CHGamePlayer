@@ -111,7 +111,9 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
                 int side = pictureSide(v.getWidth(), v.getHeight());
                 float x0 = (v.getWidth() - side) / 2f;
                 if (lastTapY < side && lastTapX >= x0 && lastTapX < x0 + side) menu();
-            } else if (touch.getVisibility() != View.VISIBLE) menu();
+            } else if (touch.getVisibility() != View.VISIBLE
+                    && lastTapX > v.getWidth() * 0.35f && lastTapX < v.getWidth() * 0.65f
+                    && lastTapY < v.getHeight() * 0.15f) menu();   /* top centre only */
         });   /* landscape with the touch pad: top centre only */
         touch = new TouchControls(this);
         touch.setOnMenu(this::menu);        /* the pad's MENU button */

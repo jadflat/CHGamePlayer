@@ -55,6 +55,12 @@ public class CatalogueActivity extends Page {
     private TextView status;                              /* one line under the title: progress */
     private String statusText = "";
     private volatile boolean busy;
+    private volatile boolean rateLimited;      /* GitHub's API said 403/429 during this check (60 calls an hour without a token) */
+
+    private void noteLimit(Exception e) {
+        String m = String.valueOf(e.getMessage());
+        if (m.contains("HTTP 403") || m.contains("HTTP 429")) rateLimited = true;
+    }
     private final Set<Item> working = new HashSet<>();    /* games being fetched now: their button says so */
     private final Map<String, JSONObject> releases = new HashMap<>();   /* "owner/repo" -> its latest GitHub release */
     private final List<Item> found = new ArrayList<>();   /* new releases from the developers, not in the list */
@@ -588,6 +594,7 @@ public class CatalogueActivity extends Page {
         if (busy) return;
         busy = true;
         say("Checking developers' repos…");
+        rateLimited = false;
         new Thread(() -> {
             Set<String> repos = new HashSet<>();
             for (Item it : items) if (it.repo.matches("[\\w.-]+/[\\w.-]+") && !gone(it)) repos.add(it.repo);
@@ -665,10 +672,12 @@ public class CatalogueActivity extends Page {
                                 rc.disconnect();
                             }
                         } catch (Exception e) {
+                            noteLimit(e);
                             dbg.append(" ").append(e);
                         }
                     }
                 } catch (Exception e) {
+                    noteLimit(e);
                     dbg.append("\n").append(owner).append(" failed: ").append(e);
                 }
             }
@@ -680,7 +689,8 @@ public class CatalogueActivity extends Page {
                 saveFound();
                 applyReleases(items);
                 say("");
-                Saves.toast(this, got == 0 ? "Could not reach GitHub" : "Checked " + got + " of " + total + " repos, "
+                Saves.toast(this, rateLimited ? "GitHub's limit of 60 checks an hour is used up: new games may be missed, try again later"
+                        : got == 0 ? "Could not reach GitHub" : "Checked " + got + " of " + total + " repos, "
                         + (fresh.isEmpty() ? "no new games" : fresh.size() + " new"));
                 build();
             });
@@ -692,6 +702,7 @@ public class CatalogueActivity extends Page {
         if (busy) return;
         busy = true;
         say("Searching GitHub for CHGame games…");
+        rateLimited = false;
         new Thread(() -> {
             Set<String> known = new HashSet<>();
             Set<String> hid0 = hiddenSet();
@@ -746,9 +757,9 @@ public class CatalogueActivity extends Page {
                                 }
                             } catch (java.io.FileNotFoundException e) {
                                 skip.put(full, today); /* no release at all */
-                            } catch (Exception e) { /* network or rate limit: try again next time */ }
+                            } catch (Exception e) { noteLimit(e); /* network or rate limit: try again next time */ }
                         }
-                    } catch (Exception e) { nogame.add(gd + " (could not read repos)"); }
+                    } catch (Exception e) { noteLimit(e); nogame.add(gd + " (could not read repos)"); }
                 }
                 HttpURLConnection c = open("https://api.github.com/search/repositories?q="
                         + Uri.encode("chgame in:name,description,topics,readme fork:false") + "&sort=updated&per_page=100");
@@ -790,10 +801,12 @@ public class CatalogueActivity extends Page {
                         nogame.add(full);
                         skip.put(full, today);
                     } catch (Exception e) {
+                        noteLimit(e);
                         nogame.add(full);
                     }
                 }
             } catch (Exception e) {
+                noteLimit(e);
                 err = e.toString();
             }
             StringBuilder sk = new StringBuilder();
@@ -830,6 +843,7 @@ public class CatalogueActivity extends Page {
                 say("");
                 build();
                 StringBuilder sb = new StringBuilder();
+                if (rateLimited) sb.append("GitHub's limit of 60 checks an hour (10 searches a minute) was reached, so the results below may be incomplete. Try again in about an hour.\n\n");
                 if (error != null) sb.append("Search failed: ").append(error).append("\n\n");
                 sb.append("Searched ").append(h).append(" repos, looked at ").append(t).append(" new ones");
                 if (sp > 0) sb.append(" (skipped ").append(sp).append(" with no release, checked this week)");
@@ -855,14 +869,25 @@ public class CatalogueActivity extends Page {
         if (assets == null) return null;
         Item it = new Item();
         boolean chg = false;
+        String[] pkg = null;        /* a .chgame package (VoidBloom-1.1.2.chgame): used when the release has no .CHG */
         for (int k = 0; k < assets.length(); k++) {
             JSONObject a = assets.optJSONObject(k);
             if (a == null) continue;
             String n = Files.safeName(a.optString("name")), u = a.optString("browser_download_url");
             if (n == null || !u.startsWith("https://")) continue;
             if (Files.isGame(n)) chg = true;
-            else if (!n.toUpperCase(Locale.ROOT).endsWith(".DAT")) continue;
+            else if (n.toLowerCase(Locale.ROOT).endsWith(".chgame")) {
+                /* one game is about 30 KB; a far bigger package is a bundle of many (bateske/CHGame's Casino), not one game */
+                if (pkg == null && a.optLong("size", 0) <= 300000) pkg = new String[] { n, u };
+                continue;
+            } else if (!n.toUpperCase(Locale.ROOT).endsWith(".DAT")) continue;
             it.files.add(new String[] { n, u, "" });
+        }
+        if (!chg && pkg != null) {
+            /* saved as <repo>.CHG; download() packs the .CHG from the package */
+            String base = repo.optString("name", "game").replaceAll("[^\\w.-]", "");
+            it.files.add(0, new String[] { (base.isEmpty() ? "game" : base) + ".CHG", pkg[1], "" });
+            chg = true;
         }
         if (!chg) return null;
         it.repo = repo.optString("full_name");
@@ -870,7 +895,7 @@ public class CatalogueActivity extends Page {
         JSONObject own = repo.optJSONObject("owner");
         it.developer = it.author = own != null ? own.optString("login", "Other") : "Other";
         String d = repo.optString("description", "");
-        it.description = "New, not checked yet" + (d.isEmpty() || d.equals("null") ? "" : ": " + d);
+        it.description = d.isEmpty() || d.equals("null") ? "" : d;
         JSONObject lic = repo.optJSONObject("license");
         it.licence = lic == null ? "" : lic.optString("spdx_id", "");
         if (it.licence.equals("NOASSERTION")) it.licence = "";

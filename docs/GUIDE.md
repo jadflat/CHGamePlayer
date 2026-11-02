@@ -5,7 +5,7 @@ Nova, with the **CHGame Player** app, alone or started from the ES-DE game list:
 
 | | What it is | Best for |
 |---|---|---|
-| **A. CHGame Player** | a small app of its own (`CHGamePlayer-1.20.apk`) | the simplest setup |
+| **A. CHGame Player** | a small app of its own (`CHGamePlayer-1.40.apk`) | the simplest setup |
 | **B. ES-DE** | a game-list front end that starts the app for you | one menu for every system you play |
 
 The RetroArch (libretro) core for the same emulator is a separate project:
@@ -20,7 +20,7 @@ Release file:
 
 | File | For |
 |---|---|
-| `CHGamePlayer-1.20.apk` | A, and B |
+| `CHGamePlayer-1.40.apk` | A, and B |
 | `frontends/es_systems.xml`, `frontends/es_find_rules.xml` | B |
 
 Your games:
@@ -38,7 +38,7 @@ a microSD card, or any file-sharing app you already use. The Retroid's internal 
 ## A. CHGame Player (the app)
 
 ### Install
-1. Copy `CHGamePlayer-1.20.apk` to the Retroid, for example into `Download`.
+1. Copy `CHGamePlayer-1.40.apk` to the Retroid, for example into `Download`.
 2. Open it in the Retroid's file manager. The first time, Android asks you to allow installs
    from that file manager: allow it, go back, and tap the APK again. Then tap **Install**.
 3. *CHGame* now appears with your apps.
@@ -197,6 +197,21 @@ The picture is drawn at the largest whole-number size that fits: 7x (896 pixels)
   copies back any file the game changed or created. It never deletes anything in your folder.
 - **Uninstalling the app deletes its saves and states.** Updating it (installing a newer APK
   over it) keeps them.
+
+### Finding new games
+The app looks for new games by itself, and **Get games** (in the menu) lists them in green with the developer's name.
+- **When:** each time the app opens, at most every 2 hours it looks at the latest release of the developers whose games you
+  already have; once a day it also searches GitHub for other CHGame releases. A developer's release can ship a `.CHG`,
+  or a `.chgame` package (as Void Bloom does); both are offered.
+- **The notice:** a new game is announced in a **New games** dialog that stays until you press OK. When you close it, the app checks
+  each new game again: its cart picture, its previews, the description, author and version (read from the package when it has
+  them), and checks a second time about 20 seconds later for anything still missing.
+- **GitHub's limit:** GitHub allows 60 requests an hour without signing in, shared by every device on your network. The scan
+  reads most release details from github.com pages, which don't count against it; the developer list and the daily search
+  still use the API. Get games tells you when the limit is hit.
+- **Don't want a game offered?** Long-press its row, *Remove game*, *Don't offer*. *Options → Offer removed games again* brings
+  them back.
+- **If a game doesn't turn up:** `adb logcat -s CHGameScan` lists the developers looked at and what each release held.
 
 ### Updating
 Install the newer APK over the old one. Android only accepts an update signed with the same

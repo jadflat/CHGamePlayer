@@ -117,16 +117,19 @@ public class GameSettingsActivity extends Page {
             return;
         }
         new Thread(() -> {
-            boolean ok = false;
+            boolean ok = false, there = false;
             try {
                 for (Files.Entry e : Files.list(getContentResolver(), t))
                     if (Files.isGame(e.path) && e.path.substring(e.path.lastIndexOf('/') + 1).equals(file)) {
+                        there = true;
                         ok = android.provider.DocumentsContract.deleteDocument(getContentResolver(), e.uri);
                         break;
                     }
             } catch (Exception ignored) { }
+            /* a game that is only offered (no file here): "Don't offer" drops it from the list, "Keep available" leaves it */
+            if (!there && Updates.offered(prefs, file, !offerAgain)) ok = true;
             final boolean done = ok;
-            if (done) Updates.removed(this, prefs, file, title, offerAgain);
+            if (done && there) Updates.removed(this, prefs, file, title, offerAgain);
             runOnUiThread(() -> {
                 android.widget.Toast.makeText(this, done ? title + " removed" : "Could not remove " + title,
                         android.widget.Toast.LENGTH_LONG).show();

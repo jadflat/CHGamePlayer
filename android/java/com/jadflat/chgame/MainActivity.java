@@ -53,7 +53,7 @@ import java.util.concurrent.Executors;
  * Options, where everything else lives.
  */
 public class MainActivity extends Activity {
-    static final String VERSION = "1.17";
+    static final String VERSION = "1.40";
     static final String PREFS = "chgame";
 
     private SharedPreferences prefs;
@@ -500,32 +500,49 @@ public class MainActivity extends Activity {
         updatesChecked = true;
         new Thread(() -> {
             boolean changed = Updates.seedBundled(this, prefs, VERSION);
-            if (System.currentTimeMillis() - prefs.getLong("newAt2", 0) > 6 * 3600_000L) {
+            if (System.currentTimeMillis() - prefs.getLong("newAt10", 0) > 2 * 3600_000L) {      /* the normal scan: every 2 hours */
                 try {
+                    Updates.limited = false;
                     changed |= Updates.discover(this, prefs, t);
-                    prefs.edit().putLong("newAt2", System.currentTimeMillis()).apply();
+                    if (!Updates.limited) prefs.edit().putLong("newAt10", System.currentTimeMillis()).apply();
                 } catch (RuntimeException e) {
                     return;
+                }
+            }
+            if (System.currentTimeMillis() - prefs.getLong("searchAt", 0) > 24 * 3600_000L) {   /* the wider GitHub search: once a day */
+                try {
+                    Updates.limited = false;
+                    changed |= Updates.search(prefs);
+                    if (!Updates.limited) prefs.edit().putLong("searchAt", System.currentTimeMillis()).apply();
+                } catch (RuntimeException e) {
+                    /* tomorrow */
                 }
             }
             java.util.Set<String> seen = new HashSet<>(prefs.getStringSet("newSeen", new HashSet<>()));
             Set<String> have = new HashSet<>();
             for (Files.Entry f : Files.list(getContentResolver(), t)) have.add(fileName(f).toUpperCase(Locale.ROOT));
             int fresh = 0;
-            String first = "";
+            StringBuilder found = new StringBuilder();
+            final java.util.List<String> freshRepos = new java.util.ArrayList<>();
             for (JSONObject n : Updates.newGames(prefs)) {
                 if (have.contains(Updates.newFile(n).toUpperCase(Locale.ROOT)) || !seen.add(n.optString("repo"))) continue;
                 if (n.optBoolean("quiet")) continue;        /* bundled games are in the list without a notice */
-                if (fresh++ == 0) first = n.optString("name");
+                fresh++;
+                freshRepos.add(n.optString("repo"));
+                String by = n.optString("owner", "");
+                found.append("\n- ").append(n.optString("name")).append(by.isEmpty() ? "" : " (by " + by + ")");
             }
             if (fresh > 0) prefs.edit().putStringSet("newSeen", seen).apply();
-            final String msg = fresh == 0 ? null : fresh == 1 ? "New game found: " + first + ". It is in the list in green."
-                    : fresh + " new games found. They are in the list in green.";
+            final String msg = fresh == 0 ? null : (fresh == 1 ? "A new game was found:" : fresh + " new games were found:") + found
+                    + "\n\nThey are in the list in green. Open one to download it.";
             final boolean redraw = changed || fresh > 0;
             if (redraw) runOnUiThread(() -> {
-                if (isFinishing()) return;
+                if (isFinishing()) { java.util.Set<String> back = new HashSet<>(prefs.getStringSet("newSeen", new HashSet<>())); back.removeAll(freshRepos); prefs.edit().putStringSet("newSeen", back).apply(); return; }
                 refresh();
-                if (msg != null && prefs.getBoolean("showNew", true)) android.widget.Toast.makeText(this, msg, android.widget.Toast.LENGTH_LONG).show();
+                /* a dialog, not a toast: it stays until it is dismissed, so it can't be missed */
+                if (msg != null && prefs.getBoolean("showNew", true))
+                    new android.app.AlertDialog.Builder(this, Ui.dialogTheme()).setTitle("New games").setMessage(msg)
+                            .setPositiveButton("OK", null).setOnDismissListener(d -> recheckNew(freshRepos)).show();
             });
         }, "new-games").start();
         new Thread(() -> {
@@ -541,6 +558,46 @@ public class MainActivity extends Activity {
                 showSelected();
             });
         }, "update-check").start();
+    }
+
+    /** After the "new games" notice is closed: looks again at each one's cart picture, previews, description, author and version. */
+    private void recheckNew(java.util.List<String> repos) {
+        recheckNew(repos, 1);
+    }
+
+    /** Pass 1 right away; pass 2 after 20 s for what is still missing (a slow download, a preview that had not finished). */
+    private void recheckNew(java.util.List<String> repos, int pass) {
+        new Thread(() -> {
+            java.util.List<String> todo = repos;
+            if (pass == 2) {
+                try { Thread.sleep(20000); } catch (InterruptedException e) { return; }
+                java.util.List<String> left = new java.util.ArrayList<>();
+                for (String repo : repos) {
+                    boolean pic;
+                    synchronized (newPics) { pic = newPics.get(repo) != null; }
+                    boolean det;
+                    try { det = new JSONObject(prefs.getString("new:" + repo, "{}")).optBoolean("enriched"); } catch (Exception e) { det = false; }
+                    if (!pic || !det) left.add(repo);
+                }
+                if (left.isEmpty() || isFinishing()) return;
+                todo = left;
+            }
+            for (String repo : todo) {
+                Updates.enrich(prefs, repo);
+                String key = repo.replace('/', '_');
+                java.io.File pic = new java.io.File(getCacheDir(), "newpic-" + key + ".bin"), shot = new java.io.File(getCacheDir(), "newshot-" + key + ".png");
+                if (pic.exists() && pic.length() != Cart.PICTURE) pic.delete();       /* a bad or empty copy: fetched again */
+                if (shot.exists() && shot.length() == 0) shot.delete();               /* "never drew" may have been a one-off */
+                synchronized (newPics) { newPics.remove(repo); }
+                newPicTried.remove(repo);
+            }
+            runOnUiThread(() -> {
+                if (isFinishing()) return;
+                refresh();
+                showSelected();
+            });
+            if (pass == 1) recheckNew(repos, 2);
+        }, "new-recheck").start();
     }
 
     /** In the background: GitHub owners for games whose header has no author (on start, and when the list refreshes). */
@@ -1194,7 +1251,7 @@ public class MainActivity extends Activity {
 
     /** "author · v1.0", once the cart has been read. */
     private String details(Files.Entry e) {
-        if (isNew(e)) { JSONObject n = newInfo(e); return "New · by " + (n == null ? "GitHub" : n.optString("owner")); }
+        if (isNew(e)) { JSONObject n = newInfo(e); return "New · by " + (n == null ? "GitHub" : n.optString("author", n.optString("owner"))); }
         Cart c = cart(e);
         StringBuilder s = new StringBuilder();
         if (c != null) {
@@ -1233,6 +1290,8 @@ public class MainActivity extends Activity {
         if (c.picture != null) return c.picture;
         Bitmap kept = bundledPic(fileName(e));
         if (kept != null) return kept;
+        Bitmap shot = shotPic(fileName(e));
+        if (shot != null) return shot;
         String base = Saves.base(fileName(e)), m = prefs.getString("mediaTree", null);
         if (m == null) return card(displayTitle(e));
         Bitmap b = snaps.get(base);
@@ -1249,6 +1308,23 @@ public class MainActivity extends Activity {
             });
         }
         return b != null ? b : card(displayTitle(e));
+    }
+
+    private final Map<String, Bitmap> shotPics = new HashMap<>();
+
+    /** A game installed from a .chgame package has no cart picture; use the title-screen frame taken while it was on offer (kept in the cache). */
+    private Bitmap shotPic(String file) {
+        if (shotPics.containsKey(file)) return shotPics.get(file);
+        Bitmap b = null;
+        try {
+            String repo = Updates.repoFor(this, prefs, file);
+            if (repo != null) {
+                java.io.File f = new java.io.File(getCacheDir(), "newshot-" + repo.replace('/', '_') + ".png");
+                if (f.length() > 0) b = android.graphics.BitmapFactory.decodeFile(f.getPath());
+            }
+        } catch (Exception ignored) { }
+        shotPics.put(file, b);
+        return b;
     }
 
     /** A plain 128x64 card with the game's name, for a game with no cart picture. */
@@ -1303,8 +1379,7 @@ public class MainActivity extends Activity {
                     String local = n.optString("local");
                     java.net.HttpURLConnection h = null;
                     try (java.io.InputStream in = !local.isEmpty() ? getAssets().open(local)
-                            : (h = CatalogueActivity.open("https://github.com/" + repo + "/releases/latest/download/"
-                                    + Uri.encode(n.optString("asset")))).getInputStream()) {
+                            : (h = CatalogueActivity.open(newUrl(n, repo))).getInputStream()) {
                         for (int r; len < whole.length && (r = in.read(whole, len, whole.length - len)) > 0; ) len += r;
                     } finally {
                         if (h != null) h.disconnect();
@@ -1331,6 +1406,12 @@ public class MainActivity extends Activity {
         return null;
     }
 
+    /** Where a new game downloads from: the file's own address when the scan found one (a .chgame package has another name), else the latest release's asset. */
+    private static String newUrl(JSONObject n, String repo) {
+        String u = n.optString("url", "");
+        return u.startsWith("https://") ? u : "https://github.com/" + repo + "/releases/latest/download/" + Uri.encode(n.optString("asset"));
+    }
+
     private void newPicDone(String repo, Bitmap got) {
         runOnUiThread(() -> {
             if (isFinishing()) return;
@@ -1350,8 +1431,7 @@ public class MainActivity extends Activity {
             String local = n.optString("local");
             java.net.HttpURLConnection h = null;
             try (java.io.InputStream in = !local.isEmpty() ? getAssets().open(local)
-                    : (h = CatalogueActivity.open("https://github.com/" + repo + "/releases/latest/download/"
-                            + Uri.encode(n.optString("asset")))).getInputStream()) {
+                    : (h = CatalogueActivity.open(newUrl(n, repo))).getInputStream()) {
                 byte[] buf = new byte[1 << 16];
                 for (int r; (r = in.read(buf)) > 0; ) {
                     mem.write(buf, 0, r);
@@ -1430,7 +1510,7 @@ public class MainActivity extends Activity {
             JSONObject n = newInfo(e);
             art.set(newPic(e));
             artTitle.setText(displayTitle(e));
-            artInfo.setText("New game by " + (n == null ? "GitHub" : n.optString("owner")) + (n == null ? "" : " · " + n.optString("tag"))
+            artInfo.setText("New game by " + (n == null ? "GitHub" : n.optString("author", n.optString("owner"))) + (n == null ? "" : " · " + n.optString("version", n.optString("tag")))
                     + (n == null || n.optString("desc").isEmpty() ? "" : "\n" + n.optString("desc")));
             artPort.setVisibility(View.GONE);
             if (artPlayed != null) artPlayed.setVisibility(View.GONE);

@@ -301,6 +301,16 @@ final class Updates {
         ed.apply();
     }
 
+    /** A game that is only offered (not in the folder): true when this file is one of the new games; with dismiss, it is not offered again. */
+    static boolean offered(SharedPreferences p, String file, boolean dismiss) {
+        for (JSONObject n : newGames(p)) {
+            if (!newFile(n).equalsIgnoreCase(file)) continue;
+            if (dismiss) p.edit().remove("new:" + n.optString("repo")).putBoolean("newdone:" + n.optString("repo"), true).apply();
+            return true;
+        }
+        return false;
+    }
+
     /** The games removed or dismissed so that they are not offered ("newdone:" in the preferences). */
     static int dismissedCount(SharedPreferences p) {
         int n = 0;
@@ -312,7 +322,7 @@ final class Updates {
     static void resetDismissed(SharedPreferences p) {
         SharedPreferences.Editor ed = p.edit();
         for (String k : p.getAll().keySet()) if (k.startsWith("newdone:")) ed.remove(k);
-        ed.remove("newAt2").remove("newSeen").apply();
+        ed.remove("newAt2").remove("newAt10").remove("searchAt").remove("newSeen").apply();
     }
 
     /** Copies the bundled catalogue's games (those with a repo and a bundled file) into "cat:bundled", once per app version. */
@@ -350,7 +360,7 @@ final class Updates {
                     if (!Files.isGame(n)) continue;
                     JSONObject o = new JSONObject().put("repo", repo).put("tag", g.optString("version", "")).put("asset", n)
                             .put("name", g.optString("name", n)).put("owner", repo.substring(0, repo.indexOf('/')))
-                            .put("desc", g.optString("description", ""));
+                            .put("desc", g.optString("description", "").replaceFirst("^New(, not checked yet)?(: |$)", "")).put("url", files.getJSONObject(k).optString("url", ""));
                     String local = files.getJSONObject(k).optString("asset", "");
                     if (src.equals("cat:bundled") && !local.isEmpty()) {       /* installed from the app itself */
                         o.put("local", local).put("quiet", true).put("extra", files);
@@ -365,11 +375,179 @@ final class Updates {
         return out;
     }
 
+    /** The "new:<repo>" entry for a repo's latest release: its .CHG, or a small .chgame package (offered as <repo>.CHG); null when it has neither. */
+    private static JSONObject offer(JSONObject r, JSONObject rel) throws org.json.JSONException {
+        if (rel == null) return null;
+        JSONArray assets = rel.optJSONArray("assets");
+        String asset = null, url = "", pkg = null, pkgUrl = "";
+        for (int k = 0; assets != null && k < assets.length(); k++) {
+            JSONObject a = assets.getJSONObject(k);
+            String an = a.optString("name", "");
+            if (Files.isGame(an)) { asset = an; break; }
+            /* one game is about 30 KB; a far bigger package is a bundle of many, not one game */
+            if (pkg == null && an.toLowerCase(Locale.ROOT).endsWith(".chgame") && a.optLong("size", 0) > 0 && a.optLong("size", 0) <= 300000
+                    && a.optString("browser_download_url").startsWith("https://")) {
+                pkg = an;
+                pkgUrl = a.optString("browser_download_url");
+            }
+        }
+        if (asset == null && pkg != null) {
+            String base = r.optString("name", "game").replaceAll("[^\\w.-]", "");
+            asset = (base.isEmpty() ? "game" : base) + ".CHG";
+            url = pkgUrl;
+        }
+        if (asset == null) return null;
+        String full = r.optString("full_name");
+        return new JSONObject().put("repo", full).put("tag", rel.optString("tag_name"))
+                .put("asset", asset).put("name", r.optString("name").replaceFirst("^CH(?=[A-Z])", ""))
+                .put("owner", full.substring(0, full.indexOf('/'))).put("url", url)
+                .put("desc", r.optString("description", "").replaceFirst("^null$", ""));
+    }
+
+    /**
+     * A repo's latest release read from its github.com pages (they don't count against the API's 60 calls an hour),
+     * shaped like the API's answer: tag_name and assets (name, browser_download_url, size); null when it has no release.
+     */
+    private static JSONObject releasePage(String full) throws IOException, org.json.JSONException {
+        HttpURLConnection rc = CatalogueActivity.open("https://github.com/" + full + "/releases/latest");
+        String u = rc.getURL().toString();
+        rc.disconnect();
+        int at = u.lastIndexOf("/tag/");
+        if (at < 0) return null;
+        String tag = Uri.decode(u.substring(at + 5));
+        HttpURLConnection h = CatalogueActivity.open("https://github.com/" + full + "/releases/expanded_assets/" + Uri.encode(tag));
+        String html;
+        try (InputStream in = h.getInputStream()) {
+            html = CatalogueActivity.readAll(in, 1 << 20);
+        } finally {
+            h.disconnect();
+        }
+        JSONArray assets = new JSONArray();
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile("/releases/download/[^/\"]+/([^\"?]+)\"").matcher(html);
+        while (m.find() && assets.length() < 12) {
+            String raw = m.group(1);
+            if (!seen.add(raw)) continue;
+            String name = Uri.decode(raw), url = "https://github.com/" + full + "/releases/download/" + Uri.encode(tag) + "/" + raw;
+            long size = 0;
+            if (name.toLowerCase(Locale.ROOT).endsWith(".chgame")) {      /* only a package's size matters (a bundle is far bigger than one game) */
+                try {
+                    HttpURLConnection sc = CatalogueActivity.open(url);
+                    size = sc.getContentLengthLong();
+                    sc.disconnect();
+                } catch (IOException ex) { /* size unknown: 0 */ }
+            }
+            assets.put(new JSONObject().put("name", name).put("browser_download_url", url).put("size", size));
+        }
+        return new JSONObject().put("tag_name", tag).put("assets", assets);
+    }
+
+    /**
+     * Blocking: a not-installed game offered from a .chgame package: reads the package's info.json for the game's own
+     * description, version and author, and keeps them in its "new:" entry (once). True when the entry changed.
+     */
+    static boolean enrich(SharedPreferences prefs, String repo) {
+        try {
+            JSONObject n = new JSONObject(prefs.getString("new:" + repo, ""));
+            String url = n.optString("url", "");
+            if (!url.startsWith("https://") || n.optBoolean("enriched")) return false;
+            ByteArrayOutputStream mem = new ByteArrayOutputStream();
+            HttpURLConnection h = CatalogueActivity.open(url);
+            try (InputStream in = h.getInputStream()) {
+                byte[] buf = new byte[1 << 14];
+                for (int r; (r = in.read(buf)) > 0; ) {
+                    mem.write(buf, 0, r);
+                    if (mem.size() > 400000) return false;
+                }
+            } finally {
+                h.disconnect();
+            }
+            String info = null;
+            try (java.util.zip.ZipInputStream z = new java.util.zip.ZipInputStream(new java.io.ByteArrayInputStream(mem.toByteArray()))) {
+                for (java.util.zip.ZipEntry ze; (ze = z.getNextEntry()) != null; ) {
+                    if (!ze.getName().equals("info.json")) continue;
+                    ByteArrayOutputStream b = new ByteArrayOutputStream();
+                    byte[] buf = new byte[4096];
+                    for (int r; (r = z.read(buf)) > 0; ) { b.write(buf, 0, r); if (b.size() > 65536) return false; }
+                    info = b.toString("UTF-8");
+                    break;
+                }
+            }
+            if (info == null) return false;
+            JSONObject root = new JSONObject(info), g = root;
+            JSONArray games = root.optJSONArray("games");
+            if (games != null && games.length() > 0) g = games.getJSONObject(0);
+            String desc = g.optString("description", ""), ver = g.optString("version", root.optString("version", "")),
+                    by = g.optString("author", root.optString("author", ""));
+            if (!desc.isEmpty()) n.put("desc", desc);
+            if (!ver.isEmpty()) n.put("version", ver);
+            if (!by.isEmpty()) n.put("author", by);
+            n.put("enriched", true);
+            if (prefs.contains("newdone:" + repo) || !prefs.contains("new:" + repo)) return false;   /* dismissed while it downloaded */
+            prefs.edit().putString("new:" + repo, n.toString()).apply();
+            android.util.Log.i("CHGameScan", repo + ": details read (version " + ver + ")");
+            return true;
+        } catch (Exception ex) {
+            android.util.Log.i("CHGameScan", repo + ": details not read: " + ex);
+            return false;
+        }
+    }
+
+    /** Set when GitHub answered 403/429 (its 60 calls an hour are used up): the scan is tried again at the next start. */
+    static volatile boolean limited;
+    private static void noteLimit(Exception e) {
+        String m = String.valueOf(e);
+        if (m.contains("HTTP 403") || m.contains("HTTP 429") || m.contains("HTTP response code: 403") || m.contains("HTTP response code: 429")) limited = true;
+    }
+
+    /** Blocking: searches all of GitHub for repos that mention CHGame and puts the ones with a release in as new games; true when any were added. */
+    static boolean search(SharedPreferences prefs) {
+        java.util.Set<String> known = new java.util.HashSet<>();
+        for (Map.Entry<String, ?> e : prefs.getAll().entrySet())
+            if (e.getKey().startsWith("new:") || e.getKey().startsWith("newdone:")) known.add(e.getKey().substring(e.getKey().indexOf(':') + 1));
+        for (String src : new String[] { "cat:found", "cat:bundled" }) try {
+            JSONArray games = new JSONObject(prefs.getString(src, "{\"games\":[]}")).getJSONArray("games");
+            for (int i = 0; i < games.length(); i++) known.add(games.getJSONObject(i).optString("repo", ""));
+        } catch (Exception ex) { /* none */ }
+        boolean changed = false;
+        try {
+            HttpURLConnection c = CatalogueActivity.open("https://api.github.com/search/repositories?q="
+                    + Uri.encode("chgame in:name,description,topics,readme fork:false") + "&sort=updated&per_page=100");
+            JSONArray list;
+            try (InputStream in = c.getInputStream()) {
+                list = new JSONObject(CatalogueActivity.readAll(in, 4 << 20)).getJSONArray("items");
+            } finally {
+                c.disconnect();
+            }
+            SharedPreferences.Editor ed = prefs.edit();
+            int tried = 0;
+            for (int i = 0; i < list.length() && tried < 15; i++) {
+                JSONObject r = list.getJSONObject(i);
+                String full = r.optString("full_name");
+                if (r.optBoolean("fork") || !full.matches("[\\w.-]+/[\\w.-]+") || known.contains(full)) continue;
+                tried++;
+                try {
+                    JSONObject o = offer(r, releasePage(full));
+                    android.util.Log.i("CHGameScan", "search " + full + (o == null ? ": no game in its latest release" : ": offered " + o.optString("asset")));
+                    if (o == null) continue;
+                    ed.putString("new:" + full, o.toString());
+                    changed = true;
+                } catch (Exception ex) {
+                    noteLimit(ex);      /* no release, or the limit: next time */
+                }
+            }
+            ed.apply();
+        } catch (Exception ex) {
+            noteLimit(ex);              /* no network or the limit: tomorrow */
+        }
+        return changed;
+    }
+
     /** Blocking: looks at the other repos of each developer whose game is installed; true when the set of new games changed. */
     static boolean discover(Context c, SharedPreferences prefs, Uri tree) {
         ContentResolver cr = c.getContentResolver();
         Map<String, String[]> src = sources(c, prefs);
-        java.util.Set<String> known = new java.util.HashSet<>(), owners = new java.util.TreeSet<>();
+        java.util.Set<String> known = new java.util.HashSet<>(), owners = new java.util.LinkedHashSet<>(), byAuthor = new java.util.TreeSet<>();
         for (String[] s : src.values()) known.add(s[0]);
         java.util.Set<String> have = new java.util.HashSet<>(), haveRepos = new java.util.HashSet<>();
         for (Files.Entry e : Files.list(cr, tree)) {
@@ -377,7 +555,15 @@ final class Updates {
             String up = e.path.substring(e.path.lastIndexOf('/') + 1).toUpperCase(Locale.ROOT);
             have.add(up);
             String[] s = src.get(up);
-            if (s != null) { owners.add(s[0].substring(0, s[0].indexOf('/'))); haveRepos.add(s[0]); }
+            if (s != null) { owners.add(s[0].substring(0, s[0].indexOf('/'))); haveRepos.add(s[0]); continue; }
+            /* a game from no catalogue: its header's author may be the GitHub user (juliendorra) */
+            String[] id = Cart.ident(cr, e.uri);
+            if (id != null && id[1].matches("[A-Za-z0-9-]{3,16}")) byAuthor.add(id[1]);
+        }
+        for (String a : byAuthor) {
+            boolean dup = false;
+            for (String o : owners) dup |= o.equalsIgnoreCase(a);
+            if (!dup) owners.add(a);       /* after the catalogue's own developers */
         }
         boolean changed = false;
         SharedPreferences.Editor ed = prefs.edit();
@@ -405,8 +591,9 @@ final class Updates {
             }
         }
         int owned = 0;
+        android.util.Log.i("CHGameScan", "developers to look at: " + owners + " (catalogue " + src.size() + " files, installed " + have.size() + ")");
         for (String owner : owners) {
-            if (++owned > 8) break;
+            if (++owned > 8 || limited) break;      /* GitHub's limit is hit: the rest waits for the next start */
             try {
                 JSONArray list;
                 HttpURLConnection h = CatalogueActivity.open("https://api.github.com/users/" + owner + "/repos?per_page=100&sort=pushed");
@@ -425,31 +612,17 @@ final class Updates {
                             || !(blob.contains("chgame") || r.optString("name").startsWith("CH"))) continue;
                     tried++;
                     try {
-                        HttpURLConnection rc = CatalogueActivity.open("https://api.github.com/repos/" + full + "/releases/latest");
-                        JSONObject rel;
-                        try (InputStream in = rc.getInputStream()) {
-                            rel = new JSONObject(CatalogueActivity.readAll(in, 1 << 20));
-                        } finally {
-                            rc.disconnect();
-                        }
-                        JSONArray assets = rel.optJSONArray("assets");
-                        String asset = null;
-                        for (int k = 0; assets != null && k < assets.length(); k++) {
-                            String an = assets.getJSONObject(k).optString("name", "");
-                            if (Files.isGame(an)) { asset = an; break; }
-                        }
-                        if (asset == null) continue;
-                        String name = r.optString("name").replaceFirst("^CH(?=[A-Z])", "");
-                        ed.putString("new:" + full, new JSONObject().put("repo", full).put("tag", rel.optString("tag_name"))
-                                .put("asset", asset).put("name", name).put("owner", owner)
-                                .put("desc", r.optString("description", "")).toString());
+                        JSONObject o = offer(r, releasePage(full));
+                        android.util.Log.i("CHGameScan", full + (o == null ? ": no game in its latest release" : ": offered " + o.optString("asset")));
+                        if (o == null) continue;
+                        ed.putString("new:" + full, o.toString());
                         changed = true;
                     } catch (Exception ex) {
-                        /* no release, or no network: next time */
+                        noteLimit(ex);  /* no release, or no network: next time */
                     }
                 }
             } catch (Exception ex) {
-                /* this developer is looked at again next time */
+                noteLimit(ex);          /* this developer is looked at again next time */
             }
         }
         ed.apply();
@@ -536,7 +709,9 @@ final class Updates {
         try {
             HttpURLConnection h;
             try {
-                h = CatalogueActivity.open("https://github.com/" + repo + "/releases/download/" + Uri.encode(tag) + "/" + Uri.encode(asset));
+                String direct = n.optString("url", "");        /* the scan's own address: a .chgame package has another name than <repo>.CHG */
+                h = CatalogueActivity.open(direct.startsWith("https://") ? direct
+                        : "https://github.com/" + repo + "/releases/download/" + Uri.encode(tag) + "/" + Uri.encode(asset));
             } catch (IOException first) {
                 String found = findAsset(repo, tag);
                 if (found == null) throw first;
