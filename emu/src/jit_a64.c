@@ -254,7 +254,13 @@ static void code_end(void *from, void *to)
 {
 #ifndef CHG_JIT_SIM
     if (wx_flip) mprotect(code_buf, CODE_SIZE, PROT_READ | PROT_EXEC);
-    __builtin___clear_cache((char *)from, (char *)to);
+    /* widen to whole 64-byte lines, then barrier: the A55 refetches stricter than the A53 */
+    char *a = (char *)((uintptr_t)from & ~(uintptr_t)63);
+    char *b = (char *)((((uintptr_t)to) + 63) & ~(uintptr_t)63);
+    __builtin___clear_cache(a, b);
+#if defined(__aarch64__)
+    __asm__ volatile("dsb ish\n\tisb" ::: "memory");
+#endif
 #else
     (void)from; (void)to;
 #endif

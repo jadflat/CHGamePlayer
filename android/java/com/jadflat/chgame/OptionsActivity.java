@@ -155,6 +155,14 @@ public class OptionsActivity extends Page {
         Keymap k = Keymap.load(prefs);
         row("Map buttons", "A: " + k.keyFor(Native.A) + " · B: " + k.keyFor(Native.B) + " · Second Up: " + k.keyFor(Keymap.UP2),
                 () -> startActivity(new Intent(this, MapButtonsActivity.class)));
+        row("Swap A and B", Options.swapAB(prefs) ? "On: the A and B keys act as each other" : "Off", () -> {
+            prefs.edit().putBoolean("swapAB", !Options.swapAB(prefs)).apply();
+            build();
+        });
+        row("Swap Select and Start", Options.swapSS(prefs) ? "On: the Select and Start keys act as each other" : "Off", () -> {
+            prefs.edit().putBoolean("swapSS", !Options.swapSS(prefs)).apply();
+            build();
+        });
         row("Touch controls", Options.TOUCH_NAMES[indexOf(Options.TOUCHES, Options.touch(prefs))]
                 + ". Edit layout, opacity, vibrate",
                 () -> startActivity(new Intent(this, TouchSettingsActivity.class)));

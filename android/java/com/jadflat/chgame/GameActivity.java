@@ -252,8 +252,10 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
             }
             /* the game's own A and B, as mapped (on a Retroid, Android's BUTTON_B is the key marked A) */
             int b = keymap != null ? keymap.button(code) : 0;
-            if (b == Native.B) { d.cancel(); return true; }
-            if (b == Native.A || code == KeyEvent.KEYCODE_DPAD_CENTER || code == KeyEvent.KEYCODE_ENTER) {
+            /* either face button answers the card: which one is "A" differs from pad to pad, and a
+               button taken for B used to cancel it and close the game. Back still cancels. */
+            if (b == Native.A || b == Native.B || code == KeyEvent.KEYCODE_BUTTON_A || code == KeyEvent.KEYCODE_BUTTON_B
+                    || code == KeyEvent.KEYCODE_DPAD_CENTER || code == KeyEvent.KEYCODE_ENTER) {
                 (fresh.isSelected() ? fresh : cont).performClick();
                 return true;
             }
@@ -331,6 +333,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
             pauseGame();
         }
     }
+
 
     @Override
     protected void onResume() {

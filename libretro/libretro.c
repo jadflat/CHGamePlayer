@@ -30,7 +30,7 @@
 #include "audio.h"
 #include "sdcard.h"
 
-#define CORE_VERSION    "0.5.2"
+#define CORE_VERSION    "0.6"
 #define AUDIO_RATE      48000
 #define FPS             60
 #define FRAME_CYCLES    (CHG_HCLK / FPS)
@@ -134,13 +134,38 @@ static const struct retro_variable vars[] = {
     { "chgame_dat_all", "Data files put on the card (on load); Off|All .DAT in folder" },
     { "chgame_cpu",    "CPU speed (frame rate unchanged); 100%|150%|200%|300%" },
 #ifdef CHG_JIT
-    { "chgame_jit",    "JIT recompiler (aarch64, same result as the interpreter but faster); On|Off" },
+    { "chgame_jit",    "JIT recompiler (aarch64, same result as the interpreter but faster); Auto|On|Off" },
 #endif
     { "chgame_colour", "Colour; Raw|LCD" },
     { "chgame_fps",    "FPS counter (game frames a second, top right); Off|On" },
     { "chgame_scale",  "Internal upscale (nearest); 1x|2x|3x|4x|5x|6x" },
     { NULL, NULL },
 };
+
+/* Auto: the JIT is proven on the Cortex-A53 (H700) and Cortex-A55 (RK3566). Any other core, or an unreadable
+   /proc/cpuinfo, uses the interpreter. */
+static int jit_cpu_ok(void)
+{
+#if defined(__aarch64__) && defined(__linux__)
+    FILE *f = fopen("/proc/cpuinfo", "r");
+    if (!f) return 0;
+    char line[160];
+    int n = 0, bad = 0;
+    while (fgets(line, sizeof line, f)) {
+        char *p = strstr(line, "CPU part");
+        if (!p) continue;
+        p = strchr(p, ':');
+        if (!p) continue;
+        n++;
+        const long part = strtol(p + 1, NULL, 0);
+        if (part != 0xd03 && part != 0xd05) bad = 1;   /* A53, A55 */
+    }
+    fclose(f);
+    return n > 0 && !bad;
+#else
+    return 0;
+#endif
+}
 
 static const char *opt(const char *key)
 {
@@ -169,7 +194,12 @@ static void apply_options(void)
     const int cpu = atoi(opt("chgame_cpu"));
     chg_cpu_pct = (cpu >= 100 && cpu <= 300) ? cpu : 100;
 #ifdef CHG_JIT
-    chg_jit = strcmp(opt("chgame_jit"), "Off") != 0;
+    {
+        const char *j = opt("chgame_jit");
+        if (!strcmp(j, "Off")) chg_jit = 0;
+        else if (!strcmp(j, "On")) chg_jit = 1;
+        else chg_jit = jit_cpu_ok();   /* Auto */
+    }
 #endif
     fps_osd = !strcmp(opt("chgame_fps"), "On");
     lcd_colour = !strcmp(opt("chgame_colour"), "LCD");

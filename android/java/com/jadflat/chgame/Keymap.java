@@ -57,6 +57,8 @@ final class Keymap {
                 } catch (NumberFormatException ignored) { }
             }
         }
+        k.swapAB = Options.swapAB(prefs);
+        k.swapSS = Options.swapSS(prefs);
         if (k.map.size() == 0) k.defaults(prefs.getBoolean("swap", false));
         /* a mapping saved before fast-forward existed: give it R1 if R1 is free */
         if (k.map.indexOfValue(FAST) < 0 && k.map.get(KeyEvent.KEYCODE_BUTTON_R1, 0) == 0)
@@ -125,8 +127,13 @@ final class Keymap {
             if (map.valueAt(i) == button) map.removeAt(i);
     }
 
+    private boolean swapAB, swapSS;
+
     int button(int keycode) {
-        return map.get(keycode, 0);
+        int b = map.get(keycode, 0);
+        if (swapAB) { if (b == Native.A) b = Native.B; else if (b == Native.B) b = Native.A; }
+        if (swapSS) { if (b == Native.START) b = Native.SELECT; else if (b == Native.SELECT) b = Native.START; }
+        return b;
     }
 
     String keyFor(int button) {

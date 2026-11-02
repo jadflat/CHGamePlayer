@@ -125,6 +125,11 @@ final class Options {
     static boolean quitHold(SharedPreferences p) { return p.getBoolean("quitHold", false); }
     static boolean quitOff(SharedPreferences p) { return p.getBoolean("quitOff", false); }
 
+    /** true: the A and B keys act as each other in games */
+    static boolean swapAB(SharedPreferences p) { return p.getBoolean("swapAB", false); }
+    /** true: the Select and Start keys act as each other in games */
+    static boolean swapSS(SharedPreferences p) { return p.getBoolean("swapSS", false); }
+
     static final String[] SNAPS = { "title", "play" };
     static final String[] SNAP_NAMES = { "The title screen", "The title, then some play (presses START and A)" };
     /** title or play: what the ES-DE videos show */
