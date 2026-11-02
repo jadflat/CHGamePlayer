@@ -105,7 +105,14 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         view = new SurfaceView(this);
         view.getHolder().addCallback(this);
-        view.setOnClickListener(v -> { if (portrait() || touch.getVisibility() != View.VISIBLE) menu(); });   /* landscape with the touch pad: top centre only */
+        view.setOnTouchListener((v, ev) -> { lastTapX = ev.getX(); lastTapY = ev.getY(); return false; });
+        view.setOnClickListener(v -> {
+            if (portrait()) {       /* only the picture itself: the black around it does nothing */
+                int side = pictureSide(v.getWidth(), v.getHeight());
+                float x0 = (v.getWidth() - side) / 2f;
+                if (lastTapY < side && lastTapX >= x0 && lastTapX < x0 + side) menu();
+            } else if (touch.getVisibility() != View.VISIBLE) menu();
+        });   /* landscape with the touch pad: top centre only */
         touch = new TouchControls(this);
         touch.setOnMenu(this::menu);        /* the pad's MENU button */
         FrameLayout frame = new FrameLayout(this);
@@ -777,6 +784,8 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         int side = pictureSide(w, hh);
         scanBmp = scan ? buildScanlines(side, "crt".equals(look)) : null;
     }
+
+    private float lastTapX, lastTapY;
 
     private boolean portrait() {
         return getResources().getConfiguration().orientation == android.content.res.Configuration.ORIENTATION_PORTRAIT;
