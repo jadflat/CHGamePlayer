@@ -53,7 +53,7 @@ import java.util.concurrent.Executors;
  * Options, where everything else lives.
  */
 public class MainActivity extends Activity {
-    static final String VERSION = "1.40";
+    static final String VERSION = "1.41";
     static final String PREFS = "chgame";
 
     private SharedPreferences prefs;
@@ -500,11 +500,11 @@ public class MainActivity extends Activity {
         updatesChecked = true;
         new Thread(() -> {
             boolean changed = Updates.seedBundled(this, prefs, VERSION);
-            if (System.currentTimeMillis() - prefs.getLong("newAt10", 0) > 2 * 3600_000L) {      /* the normal scan: every 2 hours */
+            if (System.currentTimeMillis() - prefs.getLong("newAt11", 0) > 2 * 3600_000L) {      /* the normal scan: every 2 hours */
                 try {
                     Updates.limited = false;
                     changed |= Updates.discover(this, prefs, t);
-                    if (!Updates.limited) prefs.edit().putLong("newAt10", System.currentTimeMillis()).apply();
+                    if (!Updates.limited) prefs.edit().putLong("newAt11", System.currentTimeMillis()).apply();
                 } catch (RuntimeException e) {
                     return;
                 }
@@ -1379,7 +1379,7 @@ public class MainActivity extends Activity {
                     String local = n.optString("local");
                     java.net.HttpURLConnection h = null;
                     try (java.io.InputStream in = !local.isEmpty() ? getAssets().open(local)
-                            : (h = CatalogueActivity.open(newUrl(n, repo))).getInputStream()) {
+                            : (h = openNew(n, repo)).getInputStream()) {
                         for (int r; len < whole.length && (r = in.read(whole, len, whole.length - len)) > 0; ) len += r;
                     } finally {
                         if (h != null) h.disconnect();
@@ -1412,6 +1412,23 @@ public class MainActivity extends Activity {
         return u.startsWith("https://") ? u : "https://github.com/" + repo + "/releases/latest/download/" + Uri.encode(n.optString("asset"));
     }
 
+    /** Blocking: opens a new game's file; with no address of its own and no asset of that name (a removed game that ships a .chgame), looks at the release and keeps the address it finds. */
+    private java.net.HttpURLConnection openNew(JSONObject n, String repo) throws java.io.IOException {
+        try {
+            return CatalogueActivity.open(newUrl(n, repo));
+        } catch (java.io.IOException first) {
+            if (n.optString("url", "").startsWith("https://")) throw first;
+            String u = Updates.gameUrl(repo, n.optString("tag"));
+            if (u == null) throw first;
+            synchronized (n) { try { n.put("url", u); } catch (Exception ignored) { } }
+            try {
+                JSONObject kept = new JSONObject(prefs.getString("new:" + repo, ""));
+                if (!kept.has("url")) { prefs.edit().putString("new:" + repo, kept.put("url", u).toString()).apply(); Updates.enrich(prefs, repo); }
+            } catch (Exception ignored) { /* not offered any more */ }
+            return CatalogueActivity.open(u);
+        }
+    }
+
     private void newPicDone(String repo, Bitmap got) {
         runOnUiThread(() -> {
             if (isFinishing()) return;
@@ -1431,7 +1448,7 @@ public class MainActivity extends Activity {
             String local = n.optString("local");
             java.net.HttpURLConnection h = null;
             try (java.io.InputStream in = !local.isEmpty() ? getAssets().open(local)
-                    : (h = CatalogueActivity.open(newUrl(n, repo))).getInputStream()) {
+                    : (h = openNew(n, repo)).getInputStream()) {
                 byte[] buf = new byte[1 << 16];
                 for (int r; (r = in.read(buf)) > 0; ) {
                     mem.write(buf, 0, r);

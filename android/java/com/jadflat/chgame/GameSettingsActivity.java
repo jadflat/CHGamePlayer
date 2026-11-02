@@ -130,9 +130,10 @@ public class GameSettingsActivity extends Page {
             if (!there && Updates.offered(prefs, file, !offerAgain)) ok = true;
             final boolean done = ok;
             if (done && there) Updates.removed(this, prefs, file, title, offerAgain);
+            final String msg = !done ? "Could not remove " + title : there ? title + " removed"
+                    : offerAgain ? title + " is not installed: it stays in the list to download" : title + " will not be offered again";
             runOnUiThread(() -> {
-                android.widget.Toast.makeText(this, done ? title + " removed" : "Could not remove " + title,
-                        android.widget.Toast.LENGTH_LONG).show();
+                android.widget.Toast.makeText(this, msg, android.widget.Toast.LENGTH_LONG).show();
                 if (done) finish();
             });
         }).start();

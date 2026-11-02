@@ -282,21 +282,30 @@ final class Updates {
         String[] src = sources(c, prefs).get(key);
         SharedPreferences.Editor ed = prefs.edit();
         if (src == null) {                      /* not a catalogue game: nothing to offer */
-            ed.remove("got:" + key).remove("upd:" + key).apply();
+            ed.remove("got:" + key).remove("upd:" + key).remove("gotUrl:" + key).apply();
             return;
         }
         String repo = src[0];
+        dropPics(c, repo);
         if (offerAgain) {
+            String tag = prefs.getString("got:" + key, "");
+            /* where it came from: a .chgame package is not named like the installed .CHG (src[1]) */
+            String url = prefs.getString("gotUrl:" + key, null);
+            if (url == null) url = gameUrl(repo, tag);
             try {
-                ed.putString("new:" + repo, new JSONObject().put("repo", repo).put("tag", prefs.getString("got:" + key, ""))
+                JSONObject n = new JSONObject().put("repo", repo).put("tag", tag)
                         .put("asset", src[1]).put("name", name).put("owner", repo.substring(0, repo.indexOf('/')))
-                        .put("desc", "Removed from this device.").toString());
+                        .put("desc", "Removed from this device.");
+                if (url != null) n.put("url", url);
+                ed.putString("new:" + repo, n.toString());
             } catch (Exception ex) {
                 /* not offered */
             }
-            ed.remove("newdone:" + repo).remove("upd:" + key);
+            ed.remove("newdone:" + repo).remove("upd:" + key).remove("gotUrl:" + key).apply();
+            enrich(prefs, repo);                /* its description, version and author again */
+            return;
         } else {
-            ed.putBoolean("newdone:" + repo, true).remove("new:" + repo).remove("got:" + key).remove("upd:" + key);
+            ed.putBoolean("newdone:" + repo, true).remove("new:" + repo).remove("got:" + key).remove("upd:" + key).remove("gotUrl:" + key);
         }
         ed.apply();
     }
@@ -322,7 +331,7 @@ final class Updates {
     static void resetDismissed(SharedPreferences p) {
         SharedPreferences.Editor ed = p.edit();
         for (String k : p.getAll().keySet()) if (k.startsWith("newdone:")) ed.remove(k);
-        ed.remove("newAt2").remove("newAt10").remove("searchAt").remove("newSeen").apply();
+        ed.remove("newAt2").remove("newAt11").remove("searchAt").remove("newSeen").apply();
     }
 
     /** Copies the bundled catalogue's games (those with a repo and a bundled file) into "cat:bundled", once per app version. */
@@ -659,7 +668,8 @@ final class Updates {
             String repo = n.optString("repo");
             SharedPreferences.Editor ed = prefs.edit();
             if (!n.optString("tag").isEmpty()) ed.putString("got:" + mainFile.toUpperCase(Locale.ROOT), n.optString("tag"));
-            ed.remove("new:" + repo).putBoolean("newdone:" + repo, true).apply();
+            ed.remove("new:" + repo).remove("gotUrl:" + mainFile.toUpperCase(Locale.ROOT)).putBoolean("newdone:" + repo, true).apply();
+            dropPics(c, repo);
             return null;
         } catch (Exception ex) {
             return ex.getMessage() == null ? "install failed" : ex.getMessage();
@@ -708,14 +718,15 @@ final class Updates {
     private static String installRemote(Context c, SharedPreferences prefs, Uri tree, JSONObject n, String repo, String tag, String asset) {
         try {
             HttpURLConnection h;
+            String direct = n.optString("url", "");        /* the scan's own address: a .chgame package has another name than <repo>.CHG */
+            String from = direct.startsWith("https://") ? direct
+                    : "https://github.com/" + repo + "/releases/download/" + Uri.encode(tag) + "/" + Uri.encode(asset);
             try {
-                String direct = n.optString("url", "");        /* the scan's own address: a .chgame package has another name than <repo>.CHG */
-                h = CatalogueActivity.open(direct.startsWith("https://") ? direct
-                        : "https://github.com/" + repo + "/releases/download/" + Uri.encode(tag) + "/" + Uri.encode(asset));
+                h = CatalogueActivity.open(from);
             } catch (IOException first) {
-                String found = findAsset(repo, tag);
+                String found = gameUrl(repo, tag);
                 if (found == null) throw first;
-                h = CatalogueActivity.open("https://github.com/" + repo + "/releases/download/" + Uri.encode(tag) + "/" + found);
+                h = CatalogueActivity.open(from = found);
             }
             ByteArrayOutputStream mem = new ByteArrayOutputStream();
             try (InputStream in = h.getInputStream()) {
@@ -749,12 +760,40 @@ final class Updates {
                 throw ex;
             }
             prefs.edit().putString("got:" + file.toUpperCase(Locale.ROOT), tag).remove("new:" + repo)
+                    .putString("gotUrl:" + file.toUpperCase(Locale.ROOT), from)      /* removed() offers it again from here */
                     .putBoolean("newdone:" + repo, true).apply();
+            dropPics(c, repo);
             remember(prefs, repo, file, tag, n.optString("name", file), n.optString("desc", ""));
             return null;
         } catch (IOException | RuntimeException ex) {
             return ex.getMessage() == null ? "download failed" : ex.getMessage();
         }
+    }
+
+    /** Blocking: the download address of a repo's game file (.chg / .chgame) in release tag, else in its latest release; null if none. */
+    static String gameUrl(String repo, String tag) {
+        if (tag != null && !tag.isEmpty()) {
+            String found = findAsset(repo, tag);
+            if (found != null) return "https://github.com/" + repo + "/releases/download/" + Uri.encode(tag) + "/" + found;
+        }
+        try {
+            JSONObject r = releasePage(repo);
+            JSONArray a = r == null ? null : r.optJSONArray("assets");
+            for (int i = 0; a != null && i < a.length(); i++) {
+                String name = a.getJSONObject(i).optString("name").toLowerCase(Locale.ROOT);
+                if (name.endsWith(".chg") || name.endsWith(".chgame")) return a.getJSONObject(i).optString("browser_download_url");
+            }
+        } catch (Exception e) {
+            /* none */
+        }
+        return null;
+    }
+
+    /** Drops a repo's cached cart picture and frame (newpic-, newshot-): they are made again from its current file. */
+    static void dropPics(Context c, String repo) {
+        String key = repo.replace('/', '_');
+        new java.io.File(c.getCacheDir(), "newpic-" + key + ".bin").delete();
+        new java.io.File(c.getCacheDir(), "newshot-" + key + ".png").delete();
     }
 
     /** The release's one .chg / .chgame file (still percent-encoded), or null. */
