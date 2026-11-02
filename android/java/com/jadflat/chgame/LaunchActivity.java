@@ -83,6 +83,8 @@ public class LaunchActivity extends Activity {
         Intent g = new Intent(this, GameActivity.class);
         g.putExtra("file", game.getName());
         g.putExtra("title", Cart.title(getContentResolver(), Uri.fromFile(game)));
+        /* a game left with Home must not stay stacked under the next one: both would share the core */
+        g.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
         startActivity(g);
     }
 

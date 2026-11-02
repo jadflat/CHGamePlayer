@@ -4,3 +4,5 @@ test/out/
 *.pass
 *.keystore
 *.idsig
+Starlift.sav
+chgame/

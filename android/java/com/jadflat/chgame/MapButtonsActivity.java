@@ -28,6 +28,8 @@ public class MapButtonsActivity extends Page {
         header(title != null ? "Map buttons: " + title : "Map buttons");
         Keymap k = Keymap.load(prefs, file);
         section("CHGame buttons");
+        if (Options.swapAB(prefs) || Options.swapSS(prefs))
+            row("Swaps are on", "The rows show the keys as mapped; Options > Swap applies on top, and Test buttons shows the result", null);
         for (int i = 0; i < Keymap.BUTTONS.length; i++) {
             if (i == Keymap.FIRST_EXTRA) section("Extras");
             final int n = i;
@@ -35,7 +37,7 @@ public class MapButtonsActivity extends Page {
         }
         section("");
         row("Test buttons", "Press a key to see which button it presses", () -> testButtons(k));
-        row("Reset to defaults", "The d-pad, A and B, START and SELECT as labelled, the menu on the home "
+        row("Reset to defaults", "The d-pad, the face buttons and Start/Select as on the pad, the menu on the home "
                 + "button, fast-forward on R1, Up also on Y (left)", () -> {
             k.defaults(false);
             k.save(prefs, file);

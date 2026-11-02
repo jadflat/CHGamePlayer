@@ -93,12 +93,14 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     private volatile boolean clipFull;      /* the clip reached its 20 s; the UI thread ends it */
     private int clipFrames;                 /* pictures in the clip so far */
     private static final int CLIP_FRAMES = 20 * 60;   /* 20 s at 60 frames a second */
+    private static GameActivity current;   /* the newest game: an older one destroyed late must not stop the core */
     private static boolean resetNext;       /* the hang dialog's Reset: the next activity starts fresh */
     private boolean fresh;                  /* this run starts from the beginning: no resume offer */
     private boolean skipResume;             /* this run was reset: its stuck state is not written */
 
     @Override
     protected void onCreate(Bundle saved) {
+        current = this;
         super.onCreate(saved);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         view = new SurfaceView(this);
@@ -175,6 +177,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
             }
             final String msg = err;
             runOnUiThread(() -> {
+                if (isFinishing() || isDestroyed()) return;   /* quit while loading: nothing to start */
                 if (msg != null) {
                     Toast.makeText(this, msg, Toast.LENGTH_LONG).show();
                     finish();
@@ -197,7 +200,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
             if (hasWindowFocus()) resumeGame();
             return;
         }
-        String mode =Options.resume(getSharedPreferences(MainActivity.PREFS, MODE_PRIVATE));
+        String mode = Options.resume(getSharedPreferences(MainActivity.PREFS, MODE_PRIVATE));
         File auto;
         try {
             auto = Saves.autoFile(this, name);
@@ -239,8 +242,8 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         fp.setMargins(0, Ui.dp(this, 10), 0, 0);
         box.addView(fresh, fp);
         dlg.setContentView(box);
-        /* B or Back: back to the list, the game not started and its resume point untouched */
-        dlg.setOnCancelListener(d -> { skipResume = true; finish(); });
+        /* Back: back to the list, the game not started and its resume point untouched */
+        dlg.setOnCancelListener(d -> { skipResume = true; quit(); });
         /* the pad moves the highlight at once (no first press lost leaving touch mode) */
         dlg.setOnKeyListener((d, code, ev) -> {
             if (ev.getAction() != KeyEvent.ACTION_DOWN) return false;
@@ -334,7 +337,6 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         }
     }
 
-
     @Override
     protected void onResume() {
         super.onResume();
@@ -389,6 +391,8 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         ((android.hardware.input.InputManager) getSystemService(INPUT_SERVICE)).unregisterInputDeviceListener(padListener);
         pauseGame();
         abortClip();
+        if (current != this) return;   /* a newer game owns the core now */
+        current = null;
         if (started) {
             Native.stop();
             exportCard();
