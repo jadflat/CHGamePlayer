@@ -20,6 +20,8 @@ JAR=$SDK/platforms/android-36/android.jar
 KEYS=$TOOLS/keys
 ZIG=${ZIG:-zig}
 VERSION=$(sed -n 's/.*android:versionName="\([^"]*\)".*/\1/p' android/AndroidManifest.xml)
+JV=$(sed -n 's/.*static final String VERSION = "\([^"]*\)".*/\1/p' android/java/com/jadflat/chgame/MainActivity.java)
+[ "$JV" = "$VERSION" ] || { echo "MainActivity.VERSION ($JV) != manifest versionName ($VERSION)"; exit 1; }
 OUT=build/apk
 rm -rf $OUT
 mkdir -p $OUT/obj $OUT/stubs $OUT/res $OUT/classes $OUT/dex $OUT/lib/arm64-v8a

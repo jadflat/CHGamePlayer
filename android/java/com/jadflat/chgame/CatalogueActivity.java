@@ -220,15 +220,16 @@ public class CatalogueActivity extends Page {
         for (String[] f : it.files) {
             if (!Files.isGame(f[0])) continue;
             String[] p = Updates.pending(prefs, f[0]);
-            if (p == null || p.length < 3 || !p[1].equals(it.repo)) continue;
+            if (p == null || p.length < 3 || !p[1].equalsIgnoreCase(it.repo)) continue;
             it.version = p[0].replaceFirst("^[vV]", "");
             f[1] = "https://github.com/" + p[1] + "/releases/download/" + Uri.encode(p[0]) + "/" + Uri.encode(p[2]);
+            f[2] = "";       /* a bundled game would otherwise install its old copy from the APK */
             return;
         }
     }
 
     private void addRow(Item it) {
-        takePending(it);
+        if (installed(it)) takePending(it);
         {
             boolean in = installed(it), up = in && update(it) != null;
             String summary = it.description + (it.author.isEmpty() ? "" : "\nBy " + it.author)
