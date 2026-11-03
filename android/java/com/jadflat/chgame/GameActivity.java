@@ -55,7 +55,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     private int quitKey1, quitKey2;         /* the quit combo's keys (Options: M2 then START by default) */
     private boolean quitHold, quitOff;      /* held for 2 s; or no combo at all */
     private boolean quitKey1Down, quitKey2Down, quitFired;   /* the combo keys are down; the combo took a press */
-    private int quitTaken;      /* the key whose press completed the combo (its release is the combo's too) */
+    private int quitTaken;      /* bit 1/2: the combo key whose press completed the combo (its release is the combo's too) */
     private final Runnable quitLater = this::quit;   /* the held combo: quit when its 2 s are up */
     private static final long QUIT_HOLD_MS = 2000;
     private static final int FAST_SPEED = 3;
@@ -880,23 +880,24 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     private boolean quitCombo(KeyEvent ev, int code) {
         boolean down = ev.getAction() == KeyEvent.ACTION_DOWN, up = ev.getAction() == KeyEvent.ACTION_UP;
         boolean first = code == quitKey1;
+        int bit = first ? 1 : 2;
         if (down || up) { if (first) quitKey1Down = down; else quitKey2Down = down; }
         int gb = keymap.button(code);
         boolean owned = (gb & 0xFFFF) == 0 && gb != Keymap.UP2;
         if (up) {
             watch.removeCallbacks(quitLater);
-            if (quitTaken != code) return owned;
-            quitTaken = 0;          /* the combo took this press, so its release goes too */
-            quitFired = false;
+            quitFired = false;      /* releasing either key re-arms the combo */
+            if ((quitTaken & bit) == 0) return owned;
+            quitTaken &= ~bit;      /* the combo took this press, so its release goes too */
             return true;
         }
         if (down && (first ? quitKey2Down : quitKey1Down) && ev.getRepeatCount() == 0 && !quitFired) {
             quitFired = true;
-            quitTaken = code;
+            quitTaken |= bit;
             if (quitHold) watch.postDelayed(quitLater, QUIT_HOLD_MS);
             else quit();
         }
-        return quitTaken == code || owned;
+        return (quitTaken & bit) != 0 || owned;
     }
 
     @Override
