@@ -215,21 +215,53 @@ public class CatalogueActivity extends Page {
         return open;
     }
 
-    /** The main list's update check (Updates.check) knows newer tags than this page's saved list: take its tag and file address. */
-    private void takePending(Item it) {
+    /* original item -> {the pending entry and version it was made from, the copy shown}: a stable copy, so "working" finds it */
+    private final Map<Item, Object[]> pendingView = new HashMap<>();
+
+    /** The main list's update check (Updates.check) can know a newer tag than this page's list. The game is then shown
+     *  (and updated) through a copy that carries that tag and file address; the item itself, which items, bundled and
+     *  found share and saveFound stores, is left as it is. The item when there is nothing newer to take. */
+    private Item takePending(Item it) {
         for (String[] f : it.files) {
             if (!Files.isGame(f[0])) continue;
-            String[] p = Updates.pending(prefs, f[0]);
-            if (p == null || p.length < 3 || !p[1].equalsIgnoreCase(it.repo)) continue;
-            it.version = p[0].replaceFirst("^[vV]", "");
-            f[1] = "https://github.com/" + p[1] + "/releases/download/" + Uri.encode(p[0]) + "/" + Uri.encode(p[2]);
-            f[2] = "";       /* a bundled game would otherwise install its old copy from the APK */
-            return;
+            /* Updates.check keys upd: by the installed file's own name (FOO-REV0.CHG for a packed copy), then the list's name */
+            Files.Entry e = chgIn(it, f);
+            String[] p = e == null ? null : Updates.pending(prefs, fileName(e));
+            if (p == null) p = Updates.pending(prefs, f[0]);
+            if (p == null || p.length < 3 || !p[1].equalsIgnoreCase(it.repo) || p[2].isEmpty()) continue;
+            String tag = p[0].replaceFirst("^[vV]", "");
+            /* the list already has this release or a later one (a Refresh's applyReleases, or a newer list): keep its address */
+            if (!it.version.isEmpty() && !newer(tag, it.version)) return it;
+            String made = String.join("|", p) + "|" + it.version;
+            Object[] c = pendingView.get(it);
+            if (c != null && made.equals(c[0])) return (Item) c[1];
+            Item v = copy(it);
+            for (String[] g : v.files) if (g[0].equals(f[0])) {
+                g[1] = "https://github.com/" + p[1] + "/releases/download/" + Uri.encode(p[0]) + "/" + Uri.encode(p[2]);
+                g[2] = "";       /* a bundled game would otherwise install its old copy from the APK */
+            }
+            v.version = tag;
+            pendingView.put(it, new Object[] { made, v });
+            return v;
         }
+        return it;
     }
 
-    private void addRow(Item it) {
-        if (installed(it)) takePending(it);
+    private static String fileName(Files.Entry e) {
+        return e.path.substring(e.path.lastIndexOf('/') + 1);
+    }
+
+    private static Item copy(Item it) {
+        Item v = new Item();
+        v.name = it.name; v.author = it.author; v.developer = it.developer; v.description = it.description;
+        v.licence = it.licence; v.repo = it.repo; v.group = it.group;
+        v.chgTitle = it.chgTitle; v.chgAuthor = it.chgAuthor; v.version = it.version;
+        for (String[] f : it.files) v.files.add(f.clone());
+        return v;
+    }
+
+    private void addRow(Item orig) {
+        Item it = installed(orig) ? takePending(orig) : orig;
         {
             boolean in = installed(it), up = in && update(it) != null;
             String summary = it.description + (it.author.isEmpty() ? "" : "\nBy " + it.author)
@@ -270,6 +302,8 @@ public class CatalogueActivity extends Page {
             String old = e == null ? null : haveVersion.get(e.path);
             /* the release tag need not match the .CHG's own header version: what this app fetched last counts as current */
             if (it.version.equals(prefs.getString("got:" + f[0].toUpperCase(Locale.ROOT), null))) continue;
+            if (e != null && it.version.equals(prefs.getString("got:" + fileName(e).toUpperCase(Locale.ROOT), "")
+                    .replaceFirst("^[vV]", ""))) continue;     /* Updates.apply records the tag under the installed name */
             if (old != null && !it.version.isEmpty() && newer(it.version, old)) return e;
         }
         return null;
@@ -425,6 +459,7 @@ public class CatalogueActivity extends Page {
                     runOnUiThread(() -> {
                         if (isFinishing() || busy) return;
                         readHeaders(got);
+                        pendingView.clear();
                         items = new ArrayList<>(got);
                         items.addAll(bundled);
                         items.addAll(found);
@@ -1015,6 +1050,10 @@ public class CatalogueActivity extends Page {
                     download(it, t, cn, over == null ? null : over.uri);
                     for (String[] f : it.files) if (Files.isGame(f[0]))
                         prefs.edit().putString("got:" + f[0].toUpperCase(Locale.ROOT), it.version).remove("upd:" + f[0].toUpperCase(Locale.ROOT)).apply();
+                    if (over != null) {       /* the file written over may have another name (FOO-REV0.CHG): the main list keys it so */
+                        String on = fileName(over).toUpperCase(Locale.ROOT);
+                        prefs.edit().putString("got:" + on, it.version).remove("upd:" + on).apply();
+                    }
                     Updates.authors(this, prefs, t);
                     makeMedia(it, t);
                 } catch (IOException e) {
@@ -1069,6 +1108,22 @@ public class CatalogueActivity extends Page {
         }
     }
 
+    /** Opens a file's address; a game file the release names differently (MysticBalloon-1.4.1.chgame) is looked up in its asset list. */
+    private static HttpURLConnection openGame(String[] f) throws IOException {
+        try {
+            return open(f[1]);
+        } catch (IOException first) {
+            if (!Files.isGame(f[0]) || !String.valueOf(first.getMessage()).equals("HTTP 404")) throw first;
+            java.util.regex.Matcher m = java.util.regex.Pattern.compile(
+                    "^https://github\\.com/([\\w.-]+/[\\w.-]+)/releases/download/([^/]+)/([^/]+)$").matcher(f[1]);
+            if (!m.matches()) throw first;
+            String asset = Updates.findAsset(m.group(1), Uri.decode(m.group(2)));
+            if (asset == null || asset.equals(m.group(3))) throw first;
+            if (!Uri.decode(asset).toLowerCase().startsWith(Saves.base(f[0]).toLowerCase())) throw first;   /* never another game's file */
+            return open("https://github.com/" + m.group(1) + "/releases/download/" + m.group(2) + "/" + asset);
+        }
+    }
+
     /** Every file of the game that is not in the folder yet, into the games folder; a message for the user. */
     private String download(Item it, Uri tree, String over, Uri overDoc) throws IOException {
         ContentResolver cr = getContentResolver();
@@ -1080,7 +1135,7 @@ public class CatalogueActivity extends Page {
             if (present(it, f) && !replace) continue;
             n++;
             final String label = it.name + (all > 1 ? " (file " + n + " of " + all + ")" : "");
-            HttpURLConnection c = f[2].isEmpty() ? open(f[1]) : null;
+            HttpURLConnection c = f[2].isEmpty() ? openGame(f) : null;
             Uri doc = null;
             boolean done = false;
             try (InputStream in = c != null ? c.getInputStream() : getAssets().open(f[2])) {
