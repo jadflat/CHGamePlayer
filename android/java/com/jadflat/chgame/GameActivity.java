@@ -876,7 +876,9 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         if (code == quitKey1) {
             if (down || up) quitKey1Down = down;
             if (up) watch.removeCallbacks(quitLater);
-            return true;
+            /* a key that is also a CHGame button (START, SELECT...) still reaches the game, or it would be dead
+               in play; only a key with no game use is the combo's alone */
+            return (keymap.button(code) & 0xFFFF) == 0;
         }
         if (up) {
             watch.removeCallbacks(quitLater);
