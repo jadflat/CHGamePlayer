@@ -108,7 +108,7 @@ do the same to show it again. *Options → Hidden games* shows hidden games, mar
 nothing is deleted.
 
 ### Quitting from ES-DE
-Hold **M2** and press **START** (Retroid Pocket) to quit a game. A game started from ES-DE goes
+Hold **SELECT** and press **START**, in either order, to quit a game. A game started from ES-DE goes
 straight back to ES-DE; one started from the app's list goes back to the list.
 
 ### ES-DE: names and descriptions

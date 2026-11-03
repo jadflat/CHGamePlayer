@@ -119,8 +119,8 @@ final class Options {
     /** true: the speed overlay (fps, % of real speed and frame time) */
     static boolean overlay(SharedPreferences p) { return p.getBoolean("overlay", false); }
 
-    /** The quit combo: two keys held or pressed in turn (M2 then START by default), held 2 s or not, or off. */
-    static int quitKey1(SharedPreferences p) { return p.getInt("quitKey1", android.view.KeyEvent.KEYCODE_BUTTON_Z); }
+    /** The quit combo: two keys held or pressed in turn (SELECT then START by default), held 2 s or not, or off. */
+    static int quitKey1(SharedPreferences p) { return p.getInt("quitKey1", android.view.KeyEvent.KEYCODE_BUTTON_SELECT); }
     static int quitKey2(SharedPreferences p) { return p.getInt("quitKey2", android.view.KeyEvent.KEYCODE_BUTTON_START); }
     static boolean quitHold(SharedPreferences p) { return p.getBoolean("quitHold", false); }
     static boolean quitOff(SharedPreferences p) { return p.getBoolean("quitOff", false); }

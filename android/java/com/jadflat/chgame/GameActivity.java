@@ -52,7 +52,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     private int tapFrames;                  /* so a game reading its buttons at 30 fps still sees it */
     private static final int TAP_FRAMES = 3;
     private volatile boolean fast;          /* fast-forward held */
-    private int quitKey1, quitKey2;         /* the quit combo's keys (Options: M2 then START by default) */
+    private int quitKey1, quitKey2;         /* the quit combo's keys (Options: SELECT then START by default) */
     private boolean quitHold, quitOff;      /* held for 2 s; or no combo at all */
     private boolean quitKey1Down, quitKey2Down, quitFired;   /* the combo keys are down; the combo took a press */
     private int quitTaken;      /* bit 1/2: the combo key whose press completed the combo (its release is the combo's too) */
@@ -840,7 +840,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         int code = ev.getKeyCode();
         /* a pad or keyboard is in use: no touch pad (not for BACK or volume, which phones have too) */
         if (touchAuto && !ev.isSystem()) touch.setVisibility(View.GONE);
-        /* the quit combo (Options): hold M2 (BUTTON_Z on the Retroid) and press START, by default; the
+        /* the quit combo (Options): hold SELECT and press START, by default (either order); the
            resume point is saved as for any quit */
         if (!quitOff && (code == quitKey1 || code == quitKey2) && quitCombo(ev, code)) return true;
         int b = keymap.button(code);

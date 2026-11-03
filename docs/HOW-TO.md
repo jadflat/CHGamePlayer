@@ -56,7 +56,7 @@ settings… and About this game.
 | L3 | quick save (slot 1) |
 | R3 | quick load (slot 1) |
 | BACK or Home | the in-game menu |
-| Hold M2 + START | quit (back to ES-DE, if it started the game) |
+| Hold SELECT + START | quit (back to ES-DE, if it started the game) |
 
 All of these can be changed in **Options → Map buttons**, which also has a *Test buttons* row.
 

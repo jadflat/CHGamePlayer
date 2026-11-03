@@ -9,7 +9,7 @@ play as they do on the real board.
 - A live preview of the selected game, with its sound.
 - Save states (4 slots a game), resume where you left off, the games' own saves with export
   and import, fast-forward, screenshots, button mapping, per-game sound settings.
-- ES-DE support (start games from ES-DE, quit back with M2 + START) and an ES-DE media maker:
+- ES-DE support (start games from ES-DE, quit back with SELECT + START) and an ES-DE media maker:
   a video, a screenshot and a cover for every game, made on the device.
 - One permission, internet, used only by Get games; no storage permission: the app sees only the folders you choose.
 
