@@ -215,7 +215,20 @@ public class CatalogueActivity extends Page {
         return open;
     }
 
+    /** The main list's update check (Updates.check) knows newer tags than this page's saved list: take its tag and file address. */
+    private void takePending(Item it) {
+        for (String[] f : it.files) {
+            if (!Files.isGame(f[0])) continue;
+            String[] p = Updates.pending(prefs, f[0]);
+            if (p == null || p.length < 3 || !p[1].equals(it.repo)) continue;
+            it.version = p[0].replaceFirst("^[vV]", "");
+            f[1] = "https://github.com/" + p[1] + "/releases/download/" + Uri.encode(p[0]) + "/" + Uri.encode(p[2]);
+            return;
+        }
+    }
+
     private void addRow(Item it) {
+        takePending(it);
         {
             boolean in = installed(it), up = in && update(it) != null;
             String summary = it.description + (it.author.isEmpty() ? "" : "\nBy " + it.author)
