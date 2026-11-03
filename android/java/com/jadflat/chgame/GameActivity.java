@@ -54,7 +54,8 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     private volatile boolean fast;          /* fast-forward held */
     private int quitKey1, quitKey2;         /* the quit combo's keys (Options: M2 then START by default) */
     private boolean quitHold, quitOff;      /* held for 2 s; or no combo at all */
-    private boolean quitKey1Down, quitFired;   /* the first key is down; the combo took the second key's press */
+    private boolean quitKey1Down, quitKey2Down, quitFired;   /* the combo keys are down; the combo took a press */
+    private int quitTaken;      /* the key whose press completed the combo (its release is the combo's too) */
     private final Runnable quitLater = this::quit;   /* the held combo: quit when its 2 s are up */
     private static final long QUIT_HOLD_MS = 2000;
     private static final int FAST_SPEED = 3;
@@ -343,6 +344,10 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
             resumeGame();
         } else {
             pauseGame();
+            quitKey1Down = quitKey2Down = false;   /* a release sent to a dialog never arrives: the combo starts clean */
+            quitTaken = 0;
+            quitFired = false;
+            watch.removeCallbacks(quitLater);
         }
     }
 
@@ -868,31 +873,30 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         return true;
     }
 
-    /** The quit combo's key events. True: the key is the combo's (not the game's). The first key is always
-     *  taken, as M2 was; the second is taken only while the first is down, and quits (at once, or after 2 s
-     *  held with the hold setting). */
+    /** The quit combo's key events, either key first. True: the key is the combo's (not the game's). A key
+     *  with no game use is always the combo's; one that is also a CHGame button (START, SELECT...) reaches the
+     *  game, except the press that completes the combo (and its release). The completing press quits at once,
+     *  or after 2 s held with the hold setting. */
     private boolean quitCombo(KeyEvent ev, int code) {
         boolean down = ev.getAction() == KeyEvent.ACTION_DOWN, up = ev.getAction() == KeyEvent.ACTION_UP;
-        if (code == quitKey1) {
-            if (down || up) quitKey1Down = down;
-            if (up) watch.removeCallbacks(quitLater);
-            /* a key that is also a CHGame button (START, SELECT...) still reaches the game, or it would be dead
-               in play; only a key with no game use is the combo's alone */
-            return (keymap.button(code) & 0xFFFF) == 0;
-        }
+        boolean first = code == quitKey1;
+        if (down || up) { if (first) quitKey1Down = down; else quitKey2Down = down; }
+        int gb = keymap.button(code);
+        boolean owned = (gb & 0xFFFF) == 0 && gb != Keymap.UP2;
         if (up) {
             watch.removeCallbacks(quitLater);
-            if (!quitFired) return false;
-            quitFired = false;      /* the combo took this press, so its release goes too */
+            if (quitTaken != code) return owned;
+            quitTaken = 0;          /* the combo took this press, so its release goes too */
+            quitFired = false;
             return true;
         }
-        if (!down || !quitKey1Down) return false;
-        if (ev.getRepeatCount() == 0 && !quitFired) {
+        if (down && (first ? quitKey2Down : quitKey1Down) && ev.getRepeatCount() == 0 && !quitFired) {
             quitFired = true;
+            quitTaken = code;
             if (quitHold) watch.postDelayed(quitLater, QUIT_HOLD_MS);
             else quit();
         }
-        return true;
+        return quitTaken == code || owned;
     }
 
     @Override
@@ -930,6 +934,10 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         menuOpen = true;
         pauseGame();
         keys = 0;
+        quitKey1Down = quitKey2Down = false;
+        quitTaken = 0;
+        quitFired = false;
+        watch.removeCallbacks(quitLater);
         stick = 0;
         fast = false;
         rewinding = false;
