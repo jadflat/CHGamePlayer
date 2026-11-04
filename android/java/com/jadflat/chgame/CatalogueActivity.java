@@ -94,6 +94,10 @@ public class CatalogueActivity extends Page {
         try {
             found.clear();
             found.addAll(parse(prefs.getString("cat:found", "{\"games\":[]}")));
+            /* a game found earlier that the list itself now has (bundled later): shown once, from the list */
+            Set<String> listed = new HashSet<>();
+            for (Item it : items) if (!it.repo.isEmpty()) listed.add(it.repo.toLowerCase(Locale.ROOT));
+            if (found.removeIf(x -> !x.repo.isEmpty() && listed.contains(x.repo.toLowerCase(Locale.ROOT)))) saveFound();
             items.addAll(found);
         } catch (Exception e) {
             /* a bad saved list is ignored */
@@ -645,6 +649,7 @@ public class CatalogueActivity extends Page {
         say("Checking developers' repos…");
         rateLimited = false;
         new Thread(() -> {
+            Updates.useNet(this);
             Set<String> repos = new HashSet<>();
             for (Item it : items) if (it.repo.matches("[\\w.-]+/[\\w.-]+") && !gone(it)) repos.add(it.repo);
             int ok = 0, i = 0;
@@ -693,13 +698,7 @@ public class CatalogueActivity extends Page {
             if (got > 0 || !devs().isEmpty()) for (String owner : owners) {
                 runOnUiThread(() -> say("Looking for new games from " + owner + "…"));
                 try {
-                    HttpURLConnection c = open("https://api.github.com/users/" + owner + "/repos?per_page=100&sort=pushed");
-                    JSONArray list;
-                    try (InputStream in = c.getInputStream()) {
-                        list = new JSONArray(readAll(in, 4 << 20));
-                    } finally {
-                        c.disconnect();
-                    }
+                    JSONArray list = Updates.ownerRepos(owner, new ArrayList<>());     /* github.com's page; the API only as a fallback */
                     dbg.append("\n").append(owner).append(": ").append(list.length()).append(" repos");
                     int tried = 0;
                     for (int k = 0; k < list.length() && tried < 12; k++) {
@@ -711,15 +710,11 @@ public class CatalogueActivity extends Page {
                         tried++;
                         dbg.append("\ntry ").append(full);
                         try {
-                            HttpURLConnection rc = open("https://api.github.com/repos/" + full + "/releases/latest");
-                            try (InputStream in = rc.getInputStream()) {
-                                JSONObject rel = new JSONObject(readAll(in, 1 << 20));
-                                Item it = newItem(r, rel);
-                                if (it != null) fresh.add(it);
-                                else dbg.append(" no .chg in ").append(rel.optString("tag_name"));
-                            } finally {
-                                rc.disconnect();
-                            }
+                            /* the github.com page, not the API: its 60 calls an hour are kept for the repo lists */
+                            JSONObject rel = Updates.latestRelease(full);
+                            Item it = rel == null ? null : newItem(r, rel);
+                            if (it != null) fresh.add(it);
+                            else dbg.append(" no .chg in ").append(rel == null ? "(no release)" : rel.optString("tag_name"));
                         } catch (Exception e) {
                             noteLimit(e);
                             dbg.append(" ").append(e);
@@ -746,126 +741,42 @@ public class CatalogueActivity extends Page {
         }, "catalogue-sources").start();
     }
 
-    /** Searches all of GitHub for repos that mention CHGame and have a release with a .chg file; new ones join the list. */
+    /** Searches all of GitHub for repos that mention CHGame and have a release with a game (Updates.hunt); new ones join the list. */
     private void searchGitHub() {
         if (busy) return;
         busy = true;
         say("Searching GitHub for CHGame games…");
         rateLimited = false;
         new Thread(() -> {
+            Set<String> hid0 = hiddenSet(), goneOwners = goneSet();
+            /* listed games are not looked at again; removed ones are brought back when a search names them */
             Set<String> known = new HashSet<>();
-            Set<String> hid0 = hiddenSet();
-            for (Item it : items) if (!hid0.contains(hideKey(it))) known.add(it.repo);   /* removed games are looked for again */
-            final Set<String> backRepos = new HashSet<>();
-            Set<String> goneOwners = goneSet();
-            /* repos checked in the last week with no CHGame release are skipped ("repo=day" in cat:nogame) */
-            long today = System.currentTimeMillis() / 86400000L;
-            Map<String, Long> skip = new HashMap<>();
-            for (String e : prefs.getString("cat:nogame", "").split(",")) {
-                int q = e.lastIndexOf('=');
-                if (q < 1) continue;
-                try {
-                    long d = Long.parseLong(e.substring(q + 1));
-                    if (today - d < 7) skip.put(e.substring(0, q), d);
-                } catch (NumberFormatException ex) { /* dropped */ }
+            for (Item it : items) {
+                if (!it.repo.isEmpty()) known.add(it.repo);
+                for (String[] f : it.files) known.add(Updates.repoOfUrl(f[1]));     /* Jadflat's games are listed by address */
             }
-            int skipped = 0;
+            known.remove("");
+            known.addAll(hid0);
+            /* developers whose other repos are listed too: removed ones, added ones, then the list's own */
+            Set<String> extra = new java.util.LinkedHashSet<>(goneOwners);
+            for (String d : devs()) extra.add(d.toLowerCase(Locale.ROOT));
+            for (Item it : items) if (!owner(it).isEmpty()) extra.add(owner(it));
+            for (String d : Updates.KNOWN_DEVS) extra.add(d.toLowerCase(Locale.ROOT));
+            final Updates.Hunt h = Updates.hunt(this, known, extra, 60, 180_000L, line -> runOnUiThread(() -> say(line)));
+            if (h.limited) rateLimited = true;
             final List<Item> fresh = new ArrayList<>();
-            final Set<String> restored = new HashSet<>();
-            final List<String> nogame = new ArrayList<>();
-            String err = null;
-            int tried = 0, hits = 0;
-            try {
-                // removed developers: look at their own repos directly
-                for (String gd : goneOwners) {
-                    if (!gd.matches("[\\w.-]+")) continue;
-                    runOnUiThread(() -> say("Checking removed developer " + gd));
-                    try {
-                        HttpURLConnection gc = open("https://api.github.com/users/" + gd + "/repos?sort=updated&per_page=30");
-                        JSONArray repos;
-                        try (InputStream in = gc.getInputStream()) {
-                            repos = new JSONArray(readAll(in, 4 << 20));
-                        } finally {
-                            gc.disconnect();
-                        }
-                        int looked = 0;
-                        for (int k = 0; k < repos.length() && looked < 10; k++) {
-                            JSONObject r = repos.getJSONObject(k);
-                            String full = r.optString("full_name");
-                            if (r.optBoolean("fork") || !full.matches("[\\w.-]+/[\\w.-]+")) continue;
-                            if (known.contains(full)) { restored.add(gd); break; }
-                            if (skip.containsKey(full)) { skipped++; continue; }
-                            looked++;
-                            try {
-                                HttpURLConnection rc = open("https://api.github.com/repos/" + full + "/releases/latest");
-                                try (InputStream in = rc.getInputStream()) {
-                                    Item it = newItem(r, new JSONObject(readAll(in, 1 << 20)));
-                                    if (it != null) { fresh.add(it); known.add(full); restored.add(gd); break; }
-                                } finally {
-                                    rc.disconnect();
-                                }
-                            } catch (java.io.FileNotFoundException e) {
-                                skip.put(full, today); /* no release at all */
-                            } catch (Exception e) { noteLimit(e); /* network or rate limit: try again next time */ }
-                        }
-                    } catch (Exception e) { noteLimit(e); nogame.add(gd + " (could not read repos)"); }
-                }
-                HttpURLConnection c = open("https://api.github.com/search/repositories?q="
-                        + Uri.encode("chgame in:name,description,topics,readme fork:false") + "&sort=updated&per_page=100");
-                JSONArray list;
-                try (InputStream in = c.getInputStream()) {
-                    list = new JSONObject(readAll(in, 4 << 20)).getJSONArray("items");
-                } finally {
-                    c.disconnect();
-                }
-                hits = list.length();
-                for (int k = 0; k < list.length() && tried < 40; k++) {
-                    JSONObject r = list.getJSONObject(k);
-                    String full = r.optString("full_name");
-                    JSONObject own = r.optJSONObject("owner");
-                    String login = own == null ? "" : own.optString("login", "").toLowerCase(Locale.ROOT);
-                    if (r.optBoolean("fork") || !full.matches("[\\w.-]+/[\\w.-]+")) continue;
-                    if (hid0.contains(full)) { backRepos.add(full); continue; }   /* a game the user removed: found again */
-                    boolean wasGone = goneOwners.contains(login);
-                    if (known.contains(full)) {
-                        if (wasGone) restored.add(login);
-                        continue;
-                    }
-                    if (skip.containsKey(full)) { skipped++; continue; }
-                    tried++;
-                    final String line = "Looking at " + full;
-                    runOnUiThread(() -> say(line));
-                    try {
-                        HttpURLConnection rc = open("https://api.github.com/repos/" + full + "/releases/latest");
-                        try (InputStream in = rc.getInputStream()) {
-                            Item it = newItem(r, new JSONObject(readAll(in, 1 << 20)));
-                            if (it != null) {
-                                fresh.add(it);
-                                if (wasGone) restored.add(login);
-                            } else { nogame.add(full); skip.put(full, today); }
-                        } finally {
-                            rc.disconnect();
-                        }
-                    } catch (java.io.FileNotFoundException e) {
-                        nogame.add(full);
-                        skip.put(full, today);
-                    } catch (Exception e) {
-                        noteLimit(e);
-                        nogame.add(full);
-                    }
-                }
-            } catch (Exception e) {
-                noteLimit(e);
-                err = e.toString();
+            for (JSONObject[] g : h.games) {
+                Item it = newItem(g[0], g[1]);
+                if (it != null) fresh.add(it);
             }
-            StringBuilder sk = new StringBuilder();
-            for (Map.Entry<String, Long> e : skip.entrySet()) {
-                if (sk.length() > 0) sk.append(',');
-                sk.append(e.getKey()).append('=').append(e.getValue());
+            final Set<String> restored = new HashSet<>(), backRepos = new HashSet<>();
+            for (String r : h.seen) if (hid0.contains(r)) backRepos.add(r);
+            for (String o : goneOwners) {
+                boolean back = false;
+                for (Item it : fresh) back |= owner(it).equals(o);
+                for (String r : h.seen) back |= known.contains(r) && r.toLowerCase(Locale.ROOT).startsWith(o + "/");
+                if (back) restored.add(o);
             }
-            prefs.edit().putString("cat:nogame", sk.toString()).apply();
-            final String error = err;
-            final int h = hits, t = tried, sp = skipped;
             runOnUiThread(() -> {
                 busy = false;
                 if (isFinishing()) return;
@@ -892,22 +803,31 @@ public class CatalogueActivity extends Page {
                 say("");
                 build();
                 StringBuilder sb = new StringBuilder();
-                if (rateLimited) sb.append("GitHub's limit of 60 checks an hour (10 searches a minute) was reached, so the results below may be incomplete. Try again in about an hour.\n\n");
-                if (error != null) sb.append("Search failed: ").append(error).append("\n\n");
-                sb.append("Searched ").append(h).append(" repos, looked at ").append(t).append(" new ones");
-                if (sp > 0) sb.append(" (skipped ").append(sp).append(" with no release, checked this week)");
-                sb.append(".\n\n");
+                if (h.searchLimited && h.webLimited) sb.append("GitHub's search limits (about 10 searches a minute) were reached on both the API and github.com, so not every search ran. Try again in a minute.\n\n");
+                else if (h.searchLimited) sb.append("The API search was not available (GitHub's limit, or a pause after one); github.com's search filled in.\n\n");
+                else if (h.webLimited) sb.append("github.com's search pages were not available (their limit, or a pause after one); the API search filled in.\n\n");
+                if (h.limited) sb.append("GitHub asked the app to slow down (or its own budget of " + Updates.API_PER_HOUR + " API calls an hour, shared by every device on your network, is spent). What was not reached is looked at first next time.\n\n");
+                else if (h.left > 0 || h.ownersLeft > 0) sb.append("Not everything could be looked at this time; the rest comes first next time.\n\n");
                 if (fresh.isEmpty()) sb.append("No new games found.\n");
                 else {
                     sb.append("New games (now in the list under their developer):\n");
-                    for (Item it : fresh) sb.append("\n• ").append(it.name).append(" — ").append(it.repo);
+                    for (Item it : fresh) sb.append("\n• ").append(it.name).append(" (").append(it.repo).append(")");
                     sb.append("\n");
                 }
                 if (!backGames.isEmpty()) sb.append("\nBrought back removed games: ").append(String.join(", ", backGames)).append("\n");
                 if (!restored.isEmpty()) sb.append("\nBrought back removed developers: ").append(String.join(", ", restored)).append("\n");
-                if (!nogame.isEmpty()) sb.append("\nChecked, no CHGame release:\n").append(String.join("\n", nogame));
+                sb.append("\n").append(h.summary()).append(".\n");
+                if (!h.noGame.isEmpty()) {
+                    sb.append("\nChecked, no CHGame release:\n");
+                    for (int k = 0; k < h.noGame.size() && k < 40; k++) sb.append(h.noGame.get(k)).append("\n");
+                    if (h.noGame.size() > 40) sb.append("… and ").append(h.noGame.size() - 40).append(" more\n");
+                }
+                if (!h.errors.isEmpty()) {
+                    sb.append("\nCould not read:\n");
+                    for (int k = 0; k < h.errors.size() && k < 10; k++) sb.append(h.errors.get(k)).append("\n");
+                }
                 new CardDialog.Builder(this).setTitle("Search results")
-                        .setMessage(sb.toString()).setPositiveButton("OK", null).show();
+                        .setMessage(sb.toString().trim()).setPositiveButton("OK", null).show();
             });
         }, "catalogue-search").start();
     }

@@ -53,7 +53,7 @@ import java.util.concurrent.Executors;
  * Options, where everything else lives.
  */
 public class MainActivity extends Activity {
-    static final String VERSION = "1.59";
+    static final String VERSION = "1.61";
     static final String PREFS = "chgame";
 
     private SharedPreferences prefs;
@@ -500,20 +500,20 @@ public class MainActivity extends Activity {
         updatesChecked = true;
         new Thread(() -> {
             boolean changed = Updates.seedBundled(this, prefs, VERSION);
-            if (System.currentTimeMillis() - prefs.getLong("newAt11", 0) > 2 * 3600_000L) {      /* the normal scan: every 2 hours */
+            if (System.currentTimeMillis() - prefs.getLong("newAt13", 0) > 2 * 3600_000L) {      /* the normal scan: every 2 hours */
                 try {
                     Updates.limited = false;
                     changed |= Updates.discover(this, prefs, t);
-                    if (!Updates.limited) prefs.edit().putLong("newAt11", System.currentTimeMillis()).apply();
+                    if (!Updates.limited) prefs.edit().putLong("newAt13", System.currentTimeMillis()).apply();
                 } catch (RuntimeException e) {
                     return;
                 }
             }
-            if (System.currentTimeMillis() - prefs.getLong("searchAt", 0) > 24 * 3600_000L) {   /* the wider GitHub search: once a day */
+            if (System.currentTimeMillis() - prefs.getLong("searchAt161", 0) > 24 * 3600_000L) {   /* the wider GitHub search: once a day */
                 try {
                     Updates.limited = false;
-                    changed |= Updates.search(prefs);
-                    if (!Updates.limited) prefs.edit().putLong("searchAt", System.currentTimeMillis()).apply();
+                    changed |= Updates.search(this, prefs);
+                    if (!Updates.limited) prefs.edit().putLong("searchAt161", System.currentTimeMillis()).apply();
                 } catch (RuntimeException e) {
                     /* tomorrow */
                 }

@@ -110,7 +110,8 @@ final class ChgPackage {
             text(h, 0x20, title, 32);
             text(h, 0x40, author, 16);
             text(h, 0x50, version, 8);
-            if (pic != null) h.putInt(0x60, pat).putInt(0x64, pic.length);
+            /* the picture's CRC too: without it the board's visual menu treats the picture as damaged (spec/chg.md) */
+            if (pic != null) h.putInt(0x60, pat).putInt(0x64, pic.length).putInt(0x68, crc(pic));
             h.putInt(0x6C, at).putInt(0x70, record.length).putInt(0x74, crc(record));
             h.putInt(0x1FC, crc(java.util.Arrays.copyOf(h.array(), 0x1FC)));
             ByteArrayOutputStream out = new ByteArrayOutputStream();

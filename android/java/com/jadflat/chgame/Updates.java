@@ -225,22 +225,12 @@ final class Updates {
             String repo = key.substring(8);
             if (!repo.matches("[\\w.-]+/[\\w.-]+")) continue;
             try {
-                HttpURLConnection h = CatalogueActivity.open("https://api.github.com/repos/" + repo + "/releases/latest");
-                String body;
-                try (InputStream in = h.getInputStream()) {
-                    body = CatalogueActivity.readAll(in, 1 << 20);
-                } finally {
-                    h.disconnect();
-                }
-                JSONObject rel = new JSONObject(body);
+                useNet(c);
+                JSONObject rel = latestRelease(repo);       /* the github.com pages; the API only as a fallback */
+                if (rel == null) continue;
                 String title = "", desc = "";
                 try {
-                    HttpURLConnection rh = CatalogueActivity.open("https://api.github.com/repos/" + repo);
-                    try (InputStream in = rh.getInputStream()) {
-                        desc = new JSONObject(CatalogueActivity.readAll(in, 1 << 20)).optString("description", "");
-                    } finally {
-                        rh.disconnect();
-                    }
+                    if (open("api")) desc = new JSONObject(fetchJson("https://api.github.com/repos/" + repo)).optString("description", "");
                 } catch (Exception e) {
                     /* no description */
                 }
@@ -331,7 +321,7 @@ final class Updates {
     static void resetDismissed(SharedPreferences p) {
         SharedPreferences.Editor ed = p.edit();
         for (String k : p.getAll().keySet()) if (k.startsWith("newdone:")) ed.remove(k);
-        ed.remove("newAt2").remove("newAt11").remove("searchAt").remove("newSeen").apply();
+        ed.remove("newAt2").remove("newAt13").remove("searchAt161").remove("newSeen").apply();
     }
 
     /** Copies the bundled catalogue's games (those with a repo and a bundled file) into "cat:bundled", once per app version. */
@@ -417,24 +407,25 @@ final class Updates {
      * A repo's latest release read from its github.com pages (they don't count against the API's 60 calls an hour),
      * shaped like the API's answer: tag_name and assets (name, browser_download_url, size); null when it has no release.
      */
-    private static JSONObject releasePage(String full) throws IOException, org.json.JSONException {
-        HttpURLConnection rc = CatalogueActivity.open("https://github.com/" + full + "/releases/latest");
-        String u = rc.getURL().toString();
-        rc.disconnect();
+    static JSONObject releasePage(String full) throws IOException, org.json.JSONException {
+        if (!open("web")) throw new Blocked("web back-off");
+        String u;
+        try {
+            HttpURLConnection rc = CatalogueActivity.open("https://github.com/" + full + "/releases/latest");
+            u = rc.getURL().toString();
+            rc.disconnect();
+        } catch (IOException e) {
+            if (String.valueOf(e).contains("HTTP 429")) backOff("web", null);
+            throw e;
+        }
         int at = u.lastIndexOf("/tag/");
         if (at < 0) return null;
         String tag = Uri.decode(u.substring(at + 5));
-        HttpURLConnection h = CatalogueActivity.open("https://github.com/" + full + "/releases/expanded_assets/" + Uri.encode(tag));
-        String html;
-        try (InputStream in = h.getInputStream()) {
-            html = CatalogueActivity.readAll(in, 1 << 20);
-        } finally {
-            h.disconnect();
-        }
+        String html = fetch("https://github.com/" + full + "/releases/expanded_assets/" + Uri.encode(tag));
         JSONArray assets = new JSONArray();
         java.util.Set<String> seen = new java.util.HashSet<>();
         java.util.regex.Matcher m = java.util.regex.Pattern.compile("/releases/download/[^/\"]+/([^\"?]+)\"").matcher(html);
-        while (m.find() && assets.length() < 12) {
+        while (m.find() && assets.length() < 30) {
             String raw = m.group(1);
             if (!seen.add(raw)) continue;
             String name = Uri.decode(raw), url = "https://github.com/" + full + "/releases/download/" + Uri.encode(tag) + "/" + raw;
@@ -510,50 +501,647 @@ final class Updates {
     }
 
     /** Blocking: searches all of GitHub for repos that mention CHGame and puts the ones with a release in as new games; true when any were added. */
-    static boolean search(SharedPreferences prefs) {
+    static boolean search(Context ctx, SharedPreferences prefs) {
         java.util.Set<String> known = new java.util.HashSet<>();
+        for (String a : new String[] { "catalogue.json", "catalogue-private.json" }) {
+            try (InputStream in = ctx.getAssets().open(a)) {
+                JSONArray games = new JSONObject(CatalogueActivity.readAll(in, 1 << 20)).getJSONArray("games");
+                for (int i = 0; i < games.length(); i++) {
+                    JSONObject g = games.getJSONObject(i);
+                    known.add(g.optString("repo", ""));
+                    JSONArray f = g.optJSONArray("files");
+                    for (int k = 0; f != null && k < f.length(); k++) known.add(repoOfUrl(f.getJSONObject(k).optString("url", "")));
+                }
+            } catch (Exception ex) { /* not there */ }
+        }
         for (Map.Entry<String, ?> e : prefs.getAll().entrySet())
             if (e.getKey().startsWith("new:") || e.getKey().startsWith("newdone:")) known.add(e.getKey().substring(e.getKey().indexOf(':') + 1));
         for (String src : new String[] { "cat:found", "cat:bundled" }) try {
             JSONArray games = new JSONObject(prefs.getString(src, "{\"games\":[]}")).getJSONArray("games");
             for (int i = 0; i < games.length(); i++) known.add(games.getJSONObject(i).optString("repo", ""));
         } catch (Exception ex) { /* none */ }
+        known.remove("");
+        /* the known developers and the ones added by hand: their repo pages are read even when every search is down */
+        java.util.List<String> extra = new java.util.ArrayList<>(java.util.Arrays.asList(KNOWN_DEVS));
+        for (String d : prefs.getString("cat:devs", "").split(",")) if (d.matches("[\\w-]+")) extra.add(d);
+        Hunt h = hunt(ctx, known, extra, 30, 150_000L, null);
+        if (h.sources.isEmpty() || h.limited || h.left > 0) limited = true;     /* the rest at the next start */
         boolean changed = false;
-        try {
-            HttpURLConnection c = CatalogueActivity.open("https://api.github.com/search/repositories?q="
-                    + Uri.encode("chgame in:name,description,topics,readme fork:false") + "&sort=updated&per_page=100");
-            JSONArray list;
-            try (InputStream in = c.getInputStream()) {
-                list = new JSONObject(CatalogueActivity.readAll(in, 4 << 20)).getJSONArray("items");
+        SharedPreferences.Editor ed = prefs.edit();
+        for (JSONObject[] g : h.games) try {
+            JSONObject o = offer(g[0], g[1]);
+            if (o == null) continue;
+            String full = g[0].optString("full_name");
+            if (prefs.contains("new:" + full) || prefs.contains("newdone:" + full)) continue;
+            ed.putString("new:" + full, o.toString());
+            changed = true;
+        } catch (Exception ex) { /* skipped */ }
+        ed.apply();
+        android.util.Log.i("CHGameScan", "search: " + h.summary() + ", " + h.games.size() + " with a game");
+        return changed;
+    }
+
+    /** "owner/repo" of a github.com release download address (the public list names Jadflat's games only so), else "". */
+    static String repoOfUrl(String url) {
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile("^https://github\\.com/([\\w.-]+/[\\w.-]+)/releases/").matcher(url);
+        return m.find() ? m.group(1) : "";
+    }
+
+    /* ---------------------------------------------------------------- */
+    /* GitHub access: github.com pages first, the API as a fallback       */
+    /* ---------------------------------------------------------------- */
+
+    /** The app's own cap on API calls an hour: GitHub allows 60 for each network address, shared by every device on it. */
+    static final int API_PER_HOUR = 25;
+    /** Developers known to make CHGame games: their repo pages are read by every search (one page each, no API). */
+    static final String[] KNOWN_DEVS = { "bateske", "juliendorra", "poevoid", "SellswordSoftware", "joyrider3774" };
+
+    private static volatile SharedPreferences net;
+    private static volatile java.io.File netCache;
+
+    /** Sets the preferences (API budget, back-off) and the cache folder (ETags) that fetch() uses. */
+    static void useNet(Context c) {
+        net = c.getSharedPreferences(MainActivity.PREFS, Context.MODE_PRIVATE);
+        java.io.File d = new java.io.File(c.getCacheDir(), "gh");
+        if (d.isDirectory() || d.mkdirs()) netCache = d;
+    }
+
+    /** Thrown when a source is not asked at all: its back-off runs, or the app's own API budget is spent. */
+    static final class Blocked extends IOException {
+        Blocked(String m) { super(m); }
+    }
+
+    private static String source(String url) {
+        /* github.com's search pages have a limit of their own (about 8 a minute logged out): kept apart from the other pages */
+        return url.startsWith("https://api.github.com/search/") ? "search" : url.startsWith("https://api.github.com/") ? "api"
+                : url.startsWith("https://github.com/search?") ? "websearch" : "web";
+    }
+
+    /** True when the source can be asked now (no back-off, and for the API some of this hour's budget left). */
+    static boolean open(String src) {
+        SharedPreferences p = net;
+        if (p == null) return true;
+        if (System.currentTimeMillis() < p.getLong("net:" + src + ":until", 0)) return false;
+        if (!src.equals("api")) return true;
+        long hour = System.currentTimeMillis() / 3600_000L;
+        return p.getLong("net:api:hour", 0) != hour || p.getInt("net:api:used", 0) < API_PER_HOUR;
+    }
+
+    /** Takes one API call from this hour's budget before the call is made (several threads ask at once); false when spent. */
+    private static synchronized boolean reserveApi() {
+        SharedPreferences p = net;
+        if (p == null) return true;
+        long hour = System.currentTimeMillis() / 3600_000L;
+        int used = p.getLong("net:api:hour", 0) == hour ? p.getInt("net:api:used", 0) : 0;
+        if (used >= API_PER_HOUR) return false;
+        p.edit().putLong("net:api:hour", hour).putInt("net:api:used", used + 1).commit();
+        return true;
+    }
+
+    /** API calls used this hour (the app's own count). */
+    static int apiUsed() {
+        SharedPreferences p = net;
+        if (p == null || p.getLong("net:api:hour", 0) != System.currentTimeMillis() / 3600_000L) return 0;
+        return p.getInt("net:api:used", 0);
+    }
+
+    private static synchronized void backOff(String src, HttpURLConnection c) {
+        SharedPreferences p = net;
+        if (p == null) return;
+        long now = System.currentTimeMillis(), until = 0;
+        if (c != null) try {
+            String ra = c.getHeaderField("Retry-After"), reset = c.getHeaderField("X-RateLimit-Reset");
+            if (ra != null && ra.matches("\\d{1,5}")) until = now + Long.parseLong(ra) * 1000;
+            else if (reset != null && reset.matches("\\d{9,11}")) until = Long.parseLong(reset) * 1000 + 2000;
+        } catch (Exception e) { /* none */ }
+        int strikes = p.getInt("net:" + src + ":strikes", 0) + 1;      /* without a hint: 1, 2, 4 ... 30 minutes */
+        if (until <= now) until = now + Math.min(30, 1L << Math.min(strikes - 1, 5)) * 60_000L;
+        if (until > now + 3600_000L) until = now + 3600_000L;
+        p.edit().putLong("net:" + src + ":until", until).putInt("net:" + src + ":strikes", strikes).apply();
+    }
+
+    private static void cleared(String src) {
+        SharedPreferences p = net;
+        if (p != null && p.getInt("net:" + src + ":strikes", 0) != 0) p.edit().remove("net:" + src + ":strikes").apply();
+    }
+
+    /**
+     * Blocking GET of a github.com page or an API address, following redirects, with the back-off and the API budget.
+     * API answers are kept with their ETag: an unchanged one comes back as 304 (which GitHub does not count) and is
+     * read from the cache. Throws Blocked when not asked, IOException("HTTP n") on an error answer.
+     */
+    static String fetch(String url) throws IOException {
+        String src = source(url);
+        if (!open(src)) throw new Blocked(src.equals("api") ? "API budget or back-off" : src + " back-off");
+        java.io.File cf = null;
+        String etag = null, cached = null;
+        if (src.startsWith("api") || src.equals("search")) if (netCache != null) {
+            cf = new java.io.File(netCache, Integer.toHexString(url.hashCode()) + ".txt");
+            try {
+                if (cf.isFile()) {
+                    String all = new String(java.nio.file.Files.readAllBytes(cf.toPath()), "UTF-8");
+                    int nl = all.indexOf('\n');
+                    if (nl > 0) { etag = all.substring(0, nl); cached = all.substring(nl + 1); }
+                }
+            } catch (Exception e) { /* no cache */ }
+        }
+        if (src.equals("api") && !reserveApi()) throw new Blocked("the app's API budget for this hour is spent");
+        String u = url;
+        for (int hops = 0; hops < 8; hops++) {
+            if (!u.startsWith("https://")) throw new IOException("not https");
+            HttpURLConnection c = (HttpURLConnection) new java.net.URL(u).openConnection();
+            c.setInstanceFollowRedirects(false);
+            c.setConnectTimeout(10000);
+            c.setReadTimeout(15000);
+            c.setRequestProperty("User-Agent", "CHGamePlayer/" + MainActivity.VERSION);
+            if (src.equals("api") || src.equals("search")) c.setRequestProperty("Accept", "application/vnd.github+json");
+            if (etag != null && hops == 0) c.setRequestProperty("If-None-Match", etag);
+            try {
+                int code = c.getResponseCode();
+                if (code >= 301 && code <= 308 && code != 304 && code != 305 && code != 306) {
+                    String next = c.getHeaderField("Location");
+                    if (next == null) throw new IOException("bad redirect");
+                    u = new java.net.URL(new java.net.URL(u), next).toString();
+                    continue;
+                }
+                if (code == 304 && cached != null) { cleared(src); return cached; }
+                if (code == 403 || code == 429) { backOff(src, c); throw new IOException("HTTP " + code); }
+                if (code != 200) throw new IOException("HTTP " + code);
+                String body;
+                try (InputStream in = c.getInputStream()) {
+                    body = CatalogueActivity.readAll(in, 6 << 20);
+                }
+                cleared(src);
+                String tag = c.getHeaderField("ETag");
+                if (cf != null && tag != null && !tag.contains("\n")) {
+                    try (OutputStream o = new java.io.FileOutputStream(cf)) { o.write((tag + "\n" + body).getBytes("UTF-8")); }
+                    catch (Exception e) { /* not cached */ }
+                }
+                return body;
             } finally {
                 c.disconnect();
             }
-            SharedPreferences.Editor ed = prefs.edit();
-            int tried = 0;
-            for (int i = 0; i < list.length() && tried < 15; i++) {
-                JSONObject r = list.getJSONObject(i);
-                String full = r.optString("full_name");
-                if (r.optBoolean("fork") || !full.matches("[\\w.-]+/[\\w.-]+") || known.contains(full)) continue;
-                tried++;
+        }
+        throw new IOException("too many redirects");
+    }
+
+    private static boolean limitError(Exception e) {
+        String m = String.valueOf(e);
+        return e instanceof Blocked || m.contains("HTTP 403") || m.contains("HTTP 429");
+    }
+
+    /** A github.com page that did not have what it should: GitHub changed its layout. */
+    static final class Layout extends IOException {
+        Layout(String m) { super(m); }
+    }
+
+    private static String strip(String s) {
+        return s == null ? "" : s.replaceAll("<[^>]*>", "").replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+                .replace("&quot;", "\"").replace("&#39;", "'").trim();
+    }
+
+    /** github.com/search (repositories), one page of 10, as API-shaped repo objects. */
+    static java.util.List<JSONObject> webSearch(String q, int page, boolean newest) throws IOException {
+        String html = fetch("https://github.com/search?q=" + Uri.encode(q) + "&type=repositories" + (newest ? "&s=updated&o=desc" : "") + "&p=" + page);
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile("data-target=\"react-app\\.embeddedData\">(.*?)</script>",
+                java.util.regex.Pattern.DOTALL).matcher(html);
+        java.util.List<JSONObject> out = new java.util.ArrayList<>();
+        try {
+            if (!m.find()) throw new Layout("search page: no results data");
+            JSONObject p = new JSONObject(m.group(1)).getJSONObject("payload").getJSONObject("blackbirdSearchRoute");
+            JSONArray res = p.getJSONArray("results");
+            for (int i = 0; i < res.length(); i++) {
+                JSONObject r = res.getJSONObject(i);
+                JSONObject repo = r.getJSONObject("repo").getJSONObject("repository");
+                String owner = repo.getString("owner_login"), name = repo.getString("name");
+                out.add(new JSONObject().put("full_name", owner + "/" + name).put("name", name)
+                        .put("owner", new JSONObject().put("login", owner))
+                        .put("description", strip(r.optString("hl_trunc_description", "")))
+                        .put("language", r.optString("language", "")).put("archived", r.optBoolean("archived"))
+                        .put("topics", r.optJSONArray("topics") == null ? new JSONArray() : r.getJSONArray("topics"))
+                        .put("pushed_at", repo.optString("updated_at", "")).put("fork", false));
+            }
+        } catch (org.json.JSONException e) {
+            throw new Layout("search page: " + e.getMessage());
+        }
+        return out;
+    }
+
+    /** github.com/topics/<topic>: the repos tagged with it (names only, newest pages first). */
+    static java.util.List<JSONObject> topicPage(String topic) throws IOException {
+        String html = fetch("https://github.com/topics/" + topic + "?o=desc&s=updated");
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile(
+                "href=\"/([\\w.-]+)/([\\w.-]+)\"[^>]*class=\"Link text-bold wb-break-word\"").matcher(html);
+        java.util.List<JSONObject> out = new java.util.ArrayList<>();
+        try {
+            while (m.find()) out.add(new JSONObject().put("full_name", m.group(1) + "/" + m.group(2)).put("name", m.group(2))
+                    .put("owner", new JSONObject().put("login", m.group(1))).put("description", "")
+                    .put("topics", new JSONArray().put(topic)).put("fork", false));
+        } catch (org.json.JSONException e) { /* none */ }
+        if (out.isEmpty() && !html.contains("topic")) throw new Layout("topic page: no repos");
+        return out;
+    }
+
+    /**
+     * A developer's repos, newest first, API-shaped (full_name, name, description, fork, language, pushed_at): read
+     * from github.com/<owner>?tab=repositories (30, no API), else from the API (counts against the budget).
+     */
+    static JSONArray ownerRepos(String owner, java.util.List<String> errors) throws IOException {
+        try {
+            String html = fetch("https://github.com/" + owner + "?tab=repositories");
+            String[] parts = html.split("itemprop=\"name codeRepository\"");
+            JSONArray out = new JSONArray();
+            java.util.regex.Pattern name = java.util.regex.Pattern.compile("href=\"/([\\w.-]+)/([\\w.-]+)\"\\s*$"),
+                    desc = java.util.regex.Pattern.compile("itemprop=\"description\">(.*?)</p>", java.util.regex.Pattern.DOTALL),
+                    lang = java.util.regex.Pattern.compile("itemprop=\"programmingLanguage\">([^<]*)<"),
+                    time = java.util.regex.Pattern.compile("<relative-time datetime=\"([^\"]+)\"");
+            for (int i = 1; i < parts.length; i++) {
+                java.util.regex.Matcher n = name.matcher(parts[i - 1].substring(Math.max(0, parts[i - 1].length() - 300)));
+                if (!n.find()) continue;
+                String block = parts[i];
+                java.util.regex.Matcher d = desc.matcher(block), l = lang.matcher(block), t = time.matcher(block);
+                out.put(new JSONObject().put("full_name", n.group(1) + "/" + n.group(2)).put("name", n.group(2))
+                        .put("owner", new JSONObject().put("login", n.group(1)))
+                        .put("description", d.find() ? strip(d.group(1)) : "")
+                        .put("fork", block.substring(0, Math.min(block.length(), 1500)).contains("Forked from"))
+                        .put("language", l.find() ? l.group(1).trim() : "")
+                        .put("pushed_at", t.find() ? t.group(1) : "").put("topics", new JSONArray()));
+            }
+            if (out.length() == 0 && !html.contains("doesn’t have any public repositories") && !html.contains("have any public repositories"))
+                throw new Layout(owner + "'s repo page: no repos read");
+            return out;
+        } catch (IOException e) {
+            if (e instanceof Layout) errors.add("github.com changed its page layout (" + e.getMessage() + "): used the API");
+            else if (String.valueOf(e).contains("HTTP 404")) throw e;
+            /* the page is blocked or changed: the API, if there is budget */
+            try {
+                return new JSONArray(fetchJson("https://api.github.com/users/" + owner + "/repos?per_page=100&sort=pushed"));
+            } catch (org.json.JSONException e2) {
+                throw new IOException("bad answer from the API");
+            }
+        } catch (org.json.JSONException e) {
+            throw new IOException("bad answer: " + e.getMessage());
+        }
+    }
+
+    private static String fetchJson(String url) throws IOException {
+        String s = fetch(url);
+        if (!s.trim().startsWith("{") && !s.trim().startsWith("[")) throw new IOException("not JSON");
+        return s;
+    }
+
+    /** A repo's latest release, from the github.com pages, else from the API; null when it has none. */
+    static JSONObject latestRelease(String full) throws IOException {
+        try {
+            return releasePage(full);
+        } catch (IOException e) {
+            if (String.valueOf(e).contains("HTTP 404")) throw e;
+            try {
+                return new JSONObject(fetchJson("https://api.github.com/repos/" + full + "/releases/latest"));
+            } catch (IOException e2) {
+                if (String.valueOf(e2).contains("HTTP 404")) return null;    /* the API: 404 = no release */
+                throw e;
+            } catch (org.json.JSONException e2) {
+                throw new IOException("bad answer");
+            }
+        } catch (org.json.JSONException e) {
+            throw new Layout("release page: " + e.getMessage());
+        }
+    }
+
+    /** What a GitHub-wide hunt for CHGame games found (see hunt()). */
+    static final class Hunt {
+        final java.util.List<JSONObject[]> games = new java.util.ArrayList<>();   /* {repo (API shape), latest release (releasePage shape)} */
+        final java.util.List<String> noGame = new java.util.ArrayList<>();        /* looked at: no game in the latest release (or none) */
+        final Set<String> seen = new java.util.HashSet<>();                       /* every repo the searches and owner lists named */
+        final java.util.List<String> errors = new java.util.ArrayList<>();
+        final java.util.List<String> sources = new java.util.ArrayList<>();       /* "API search 2", "web search 3" ... */
+        int queries, listed, looked, skipped, junk, owners, left, ownersLeft;
+        boolean limited, searchLimited, webLimited, fromCache;
+        String cacheDate = "";
+
+        String summary() {
+            return (fromCache ? "Search was down: used the repo list saved " + cacheDate + ". " : "")
+                    + "Sources: " + (sources.isEmpty() ? "none answered" : String.join(", ", sources)) + ". "
+                    + listed + " repos named" + (owners > 0 ? ", " + owners + " developers' repo lists read" : "")
+                    + ", looked at " + looked + (skipped > 0 ? ", skipped " + skipped + " unchanged since checked" : "")
+                    + (junk > 0 ? ", ignored " + junk + " unrelated" : "")
+                    + (left > 0 || ownersLeft > 0 ? ", " + (left + ownersLeft) + " left for next time" : "")
+                    + ". API calls this hour: " + apiUsed() + " of the app's " + API_PER_HOUR;
+        }
+    }
+
+    /* The API's searches (their own limit, 10 a minute); the github.com search pages below add to them */
+    private static final String[][] QUERIES = {
+        { "chgame in:name,description,topics,readme fork:false", "&sort=updated", "2" },
+        { "topic:chgame", "", "1" },
+        { "ch32x035 in:name,description,topics,readme fork:false", "", "1" },
+    };
+
+    private static void addRepo(Map<String, JSONObject> repos, JSONObject r) {
+        String full = r.optString("full_name");
+        if (!full.matches("[\\w.-]+/[\\w.-]+") || r.optBoolean("fork")) return;
+        JSONObject had = repos.get(full);
+        if (had == null) { repos.put(full, r); return; }
+        try {      /* a topic page names only the repo: keep the fuller answer, with the topic */
+            if (had.optString("description").isEmpty() && !r.optString("description").isEmpty()) { repos.put(full, r); r.put("topics", had.optJSONArray("topics")); }
+            else if (r.optJSONArray("topics") != null && r.optJSONArray("topics").length() > 0 && had.optJSONArray("topics") != null && had.optJSONArray("topics").length() == 0) had.put("topics", r.optJSONArray("topics"));
+        } catch (org.json.JSONException e) { /* kept */ }
+    }
+
+    /**
+     * Blocking: searches GitHub for CHGame games. The API's searches (paged) and github.com's search and topic pages,
+     * and the repo pages of the developers left from last time and of extraOwners, merged; unrelated repos dropped; the
+     * likeliest looked at first; each latest release read from its github.com page (the API only as a fallback), four at
+     * a time. Then the repo pages of developers whose game was just found (siblings). known: repos already listed (named in seen, not looked at). A repo
+     * with no game is remembered (cat:checked) and skipped until it is pushed to again; repos and developers not
+     * reached (limits, the time cap) are kept and come first next time. If every search fails, the last saved list is used.
+     */
+    static Hunt hunt(Context ctx, Set<String> known, java.util.Collection<String> extraOwners, int maxLook, long maxMillis,
+                     java.util.function.Consumer<String> say) {
+        useNet(ctx);
+        SharedPreferences prefs = net;
+        long deadline = System.currentTimeMillis() + maxMillis;
+        Hunt h = new Hunt();
+        Set<String> gameOwners = new java.util.HashSet<>();
+        for (String k : known) if (k.indexOf('/') > 0) gameOwners.add(k.substring(0, k.indexOf('/')).toLowerCase(Locale.ROOT));
+        Map<String, JSONObject> repos = new java.util.LinkedHashMap<>();
+        int api = 0, web = 0;
+        for (String[] q : QUERIES) {
+            int pages = Integer.parseInt(q[2]);
+            for (int page = 1; page <= pages; page++) {
+                if (!open("search")) { h.searchLimited = true; break; }
+                if (say != null) say.accept("Searching GitHub: " + q[0].replace(" in:name,description,topics,readme fork:false", ""));
                 try {
-                    JSONObject o = offer(r, releasePage(full));
-                    android.util.Log.i("CHGameScan", "search " + full + (o == null ? ": no game in its latest release" : ": offered " + o.optString("asset")));
-                    if (o == null) continue;
-                    ed.putString("new:" + full, o.toString());
-                    changed = true;
+                    JSONObject res = new JSONObject(fetchJson("https://api.github.com/search/repositories?q=" + Uri.encode(q[0])
+                            + q[1] + "&per_page=100&page=" + page));
+                    h.queries++;
+                    api++;
+                    JSONArray items = res.optJSONArray("items");
+                    for (int i = 0; items != null && i < items.length(); i++) addRepo(repos, items.getJSONObject(i));
+                    if (items == null || page * 100 >= res.optInt("total_count", 0)) break;
                 } catch (Exception ex) {
-                    noteLimit(ex);      /* no release, or the limit: next time */
+                    if (limitError(ex)) h.searchLimited = true;
+                    else h.errors.add("API search \"" + q[0] + "\": " + ex.getMessage());
+                    break;
                 }
             }
-            ed.apply();
-        } catch (Exception ex) {
-            noteLimit(ex);              /* no network or the limit: tomorrow */
         }
-        return changed;
+        /* github.com's own search pages (10 a page, a limit of their own): a few always, more when the API's search failed */
+        String[][] webQ = api > 0 ? new String[][] { { "chgame", "1", "3" }, { "chgame", "0", "2" } }
+                : new String[][] { { "chgame", "1", "5" }, { "chgame", "0", "3" }, { "topic:chgame", "1", "1" }, { "ch32x035 game", "0", "1" } };
+        for (String[] q : webQ) {
+            for (int page = 1; page <= Integer.parseInt(q[2]) && !h.webLimited; page++) {
+                if (!open("websearch")) { h.webLimited = true; break; }
+                if (say != null) say.accept("Searching github.com: " + q[0] + " (page " + page + ")");
+                try {
+                    java.util.List<JSONObject> got = webSearch(q[0], page, q[1].equals("1"));
+                    web++;
+                    for (JSONObject r : got) addRepo(repos, r);
+                    if (got.size() < 10) break;
+                } catch (Exception ex) {
+                    if (limitError(ex)) h.webLimited = true;
+                    else h.errors.add((ex instanceof Layout ? "github.com changed its page layout: " : "github.com search: ") + ex.getMessage());
+                    break;
+                }
+            }
+        }
+        try {
+            for (JSONObject r : topicPage("chgame")) addRepo(repos, r);
+            h.sources.add("topic page");
+        } catch (Exception ex) {
+            if (limitError(ex)) h.limited = true;
+            else h.errors.add((ex instanceof Layout ? "github.com changed its page layout: " : "topic page: ") + ex.getMessage());
+        }
+        if (api > 0) h.sources.add(0, "API search (" + api + ")");
+        if (web > 0) h.sources.add(api > 0 ? 1 : 0, "github.com search (" + web + " pages)");
+        h.queries = api + web;
+        java.io.File saved = netCache == null ? null : new java.io.File(netCache, "hunt-repos.json");
+        if (repos.isEmpty() && saved != null && saved.isFile()) {
+            try {      /* every search failed: the list from the last good run, so the developers' pages and releases still get looked at */
+                JSONArray a = new JSONArray(new String(java.nio.file.Files.readAllBytes(saved.toPath()), "UTF-8"));
+                for (int i = 0; i < a.length(); i++) addRepo(repos, a.getJSONObject(i));
+                h.fromCache = true;
+                h.cacheDate = java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.MEDIUM, java.text.DateFormat.SHORT).format(new java.util.Date(saved.lastModified()));
+            } catch (Exception ex) { /* none */ }
+        } else if (repos.size() >= 20 && saved != null) {
+            try (OutputStream o = new java.io.FileOutputStream(saved)) {
+                JSONArray a = new JSONArray();
+                for (JSONObject r : repos.values()) a.put(r);
+                o.write(a.toString().getBytes("UTF-8"));
+            } catch (Exception ex) { /* not saved */ }
+        }
+        h.listed = repos.size();
+        h.seen.addAll(repos.keySet());
+        Map<String, String> checked = checkedMap(prefs);
+        long today = System.currentTimeMillis() / 86400000L;
+        /* the known developers' repo pages (free github.com pages, where new games most often appear), and any left last time:
+           read before the looking starts, so their repos are ranked with the search's */
+        Set<String> owners = new java.util.LinkedHashSet<>();
+        for (String o : prefs.getString("cat:ownersTodo", "").split(",")) if (!o.isEmpty()) owners.add(o);
+        for (String o : extraOwners) owners.add(o.toLowerCase(Locale.ROOT));
+        Set<String> listedOwners = new java.util.HashSet<>();
+        java.util.List<String> notReached = new java.util.ArrayList<>();
+        Map<String, JSONObject> fromOwners = listOwners(h, owners, known, deadline, say, listedOwners, notReached);
+        java.util.List<JSONObject> todo = new java.util.ArrayList<>();
+        Set<String> looked = new java.util.HashSet<>();
+        Map<String, JSONObject> all = new java.util.LinkedHashMap<>(repos);
+        for (JSONObject r : fromOwners.values()) all.putIfAbsent(r.optString("full_name"), r);
+        for (JSONObject r : all.values()) {
+            String full = r.optString("full_name");
+            if (known.contains(full)) continue;
+            if (junk(r)) { h.junk++; continue; }
+            if (recent(checked, r, today)) { h.skipped++; continue; }
+            if (looked.add(full)) todo.add(r);
+        }
+        final Set<String> owners0 = gameOwners;
+        java.util.Collections.sort(todo, (a, b) -> score(b, owners0) - score(a, owners0));     /* stable: newest first among equals */
+        if (todo.size() > maxLook) { h.left += todo.size() - maxLook; todo = new java.util.ArrayList<>(todo.subList(0, maxLook)); }
+        look(h, todo, checked, today, deadline, say);
+        saveChecked(prefs, checked, today);
+        /* siblings: the repo pages of developers whose game was just found (not listed yet) */
+        Set<String> newOwners = new java.util.LinkedHashSet<>();
+        for (JSONObject[] g : h.games) if (!listedOwners.contains(ownerOf(g[0]))) newOwners.add(ownerOf(g[0]));
+        java.util.List<JSONObject> more = new java.util.ArrayList<>();
+        for (JSONObject r : listOwners(h, newOwners, known, deadline, say, listedOwners, notReached).values()) {
+            String full = r.optString("full_name");
+            if (junk(r) || !looked.add(full)) continue;
+            if (recent(checked, r, today)) { h.skipped++; continue; }
+            more.add(r);
+        }
+        h.ownersLeft = 0;
+        for (String o : notReached) if (!extraOwners.contains(o)) h.ownersLeft++;
+        prefs.edit().putString("cat:ownersTodo", String.join(",", notReached)).apply();
+        if (more.size() > 30) { h.left += more.size() - 30; more = new java.util.ArrayList<>(more.subList(0, 30)); }
+        look(h, more, checked, today, deadline, say);
+        saveChecked(prefs, checked, today);
+        return h;
+    }
+
+    /**
+     * Reads the repo pages of these developers (github.com first, the API as a fallback), at most 14 a run; returns their
+     * repos that look like CHGame work (a CH name, or CHGame in the name or description), forks and known ones left out.
+     * Developers not reached (limits, the time cap) go to notReached; the ones read to listed.
+     */
+    private static Map<String, JSONObject> listOwners(Hunt h, Set<String> owners, Set<String> known, long deadline,
+                                                      java.util.function.Consumer<String> say, Set<String> listed, java.util.List<String> notReached) {
+        Map<String, JSONObject> out = new java.util.LinkedHashMap<>();
+        for (String o : owners) {
+            if (!o.matches("[\\w.-]+") || listed.contains(o)) continue;
+            if (h.owners >= 14 || System.currentTimeMillis() > deadline || !open("web") && !open("api")) { if (!notReached.contains(o)) notReached.add(o); continue; }
+            if (say != null) say.accept("Looking at " + o + "'s repos");
+            try {
+                JSONArray list = ownerRepos(o, h.errors);
+                h.owners++;
+                listed.add(o);
+                for (int i = 0; i < list.length(); i++) {
+                    JSONObject r = list.getJSONObject(i);
+                    String full = r.optString("full_name");
+                    if (r.optBoolean("fork") || !full.matches("[\\w.-]+/[\\w.-]+")) continue;
+                    h.seen.add(full);
+                    if (known.contains(full)) continue;
+                    if (blob(r).contains("chgame") || r.optString("name").matches("CH[A-Z0-9].*")) out.putIfAbsent(full, r);
+                }
+            } catch (Exception ex) {
+                if (limitError(ex)) { h.limited = true; if (!notReached.contains(o)) notReached.add(o); }
+                else if (!String.valueOf(ex).contains("HTTP 404")) { h.errors.add(o + "'s repos: " + ex.getMessage()); if (!notReached.contains(o)) notReached.add(o); }
+            }
+        }
+        return out;
+    }
+
+    /** Reads each repo's latest release, four at a time, until the deadline; fills h.games / h.noGame and checked. */
+    private static void look(Hunt h, java.util.List<JSONObject> list, Map<String, String> checked, long today, long deadline,
+                             java.util.function.Consumer<String> say) {
+        if (list.isEmpty()) return;
+        java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(4);
+        java.util.concurrent.atomic.AtomicInteger n = new java.util.concurrent.atomic.AtomicInteger();
+        java.util.List<java.util.concurrent.Future<?>> jobs = new java.util.ArrayList<>();
+        final int total = list.size();
+        for (JSONObject r : list) jobs.add(pool.submit(() -> {
+            String full = r.optString("full_name");
+            if (System.currentTimeMillis() > deadline || !open("web") && !open("api")) {
+                synchronized (h) { h.left++; }      /* not looked at, not marked: first in line next time */
+                return;
+            }
+            if (say != null) say.accept("Looking at " + full + " (" + n.incrementAndGet() + "/" + total + ")");
+            try {
+                JSONObject rel = latestRelease(full);
+                synchronized (h) {
+                    h.looked++;
+                    if (hasGame(rel)) h.games.add(new JSONObject[] { r, rel });
+                    else {
+                        h.noGame.add(full + (rel == null ? " (no release)" : " (" + rel.optString("tag_name") + ": no .CHG)"));
+                        mark(checked, full, today, r.optString("pushed_at"));
+                    }
+                }
+            } catch (Exception ex) {
+                synchronized (h) {
+                    String m = String.valueOf(ex);
+                    if (m.contains("HTTP 404")) { h.looked++; h.noGame.add(full + " (gone)"); mark(checked, full, today, r.optString("pushed_at")); }
+                    else if (limitError(ex)) { h.limited = true; h.left++; }
+                    else { h.left++; h.errors.add(full + ": " + (ex instanceof Layout ? "github.com changed its page layout: " : "") + ex.getMessage()); }
+                }
+            }
+        }));
+        for (java.util.concurrent.Future<?> f : jobs) try { f.get(); } catch (Exception ex) { /* counted inside */ }
+        pool.shutdown();
+    }
+
+    private static String blob(JSONObject r) {
+        return (r.optString("name") + " " + r.optString("description") + " " + r.optJSONArray("topics")).toLowerCase(Locale.ROOT);
+    }
+
+    /** How likely a repo is to hold a CHGame game, from what the search already told (no extra calls). */
+    private static int score(JSONObject r, Set<String> gameOwners) {
+        String n = r.optString("name"), b = blob(r), own = ownerOf(r);
+        int s = 0;
+        if (gameOwners.contains(own)) s += 4;
+        if (n.matches("CH[A-Z0-9].*") || n.toLowerCase(Locale.ROOT).contains("chgame")) s += 3;
+        String d = r.optString("description", "").replaceFirst("^null$", "").toLowerCase(Locale.ROOT), lang = r.optString("language", "");
+        if (d.contains("chgame")) s += 3;
+        if (d.contains("chgame") && (d.contains("handheld") || d.contains("ch32x035") || d.contains("game"))) s += 2;
+        if (b.contains("\"chgame\"")) s += 2;          /* the topic */
+        if (b.contains("ch32x035")) s += 1;
+        if (lang.equals("C") || lang.equals("C++")) s += 1;
+        if (d.isEmpty() && !gameOwners.contains(own)) s -= 2;
+        if (lang.matches("HTML|CSS|JavaScript|TypeScript|PHP|Solidity|Vue") && !d.contains("chgame")) s -= 2;
+        return s;
+    }
+
+    /** Repos that are plainly not a game: web sites, ones not pushed to since before the CHGame existed (autumn 2026). */
+    private static boolean junk(JSONObject r) {
+        String n = r.optString("name").toLowerCase(Locale.ROOT), d = r.optString("description").toLowerCase(Locale.ROOT);
+        String pushed = r.optString("pushed_at", "");
+        return n.endsWith(".github.io") || d.contains("official website") || (!pushed.isEmpty() && pushed.compareTo("2026-08") < 0)
+                || r.optBoolean("archived") && !blob(r).contains("chgame");
+    }
+
+    private static String ownerOf(JSONObject r) {
+        String f = r.optString("full_name");
+        int s = f.indexOf('/');
+        return s > 0 ? f.substring(0, s).toLowerCase(Locale.ROOT) : "";
+    }
+
+    /** A release with a .CHG, or a .chgame package small enough to be one game (a bundle of many is far bigger). */
+    static boolean hasGame(JSONObject rel) {
+        JSONArray a = rel == null ? null : rel.optJSONArray("assets");
+        for (int k = 0; a != null && k < a.length(); k++) {
+            JSONObject x = a.optJSONObject(k);
+            if (x == null) continue;
+            String n = x.optString("name", "").toLowerCase(Locale.ROOT);
+            if (n.endsWith(".chg") || n.endsWith(".chgame") && x.optLong("size", 0) > 0 && x.optLong("size", 0) <= 300000) return true;
+        }
+        return false;
+    }
+
+    private static long dayOf(String v) {
+        try { return Long.parseLong(v.substring(0, v.indexOf('|'))); } catch (Exception e) { return 0; }
+    }
+
+    /** Repos looked at with no game: "repo" -> "day|pushed_at" (cat:checked). */
+    private static Map<String, String> checkedMap(SharedPreferences prefs) {
+        Map<String, String> m = new HashMap<>();
+        try {
+            JSONObject o = new JSONObject(prefs.getString("cat:checked", "{}"));
+            for (java.util.Iterator<String> it = o.keys(); it.hasNext(); ) { String k = it.next(); m.put(k, o.optString(k)); }
+        } catch (Exception ex) { /* none */ }
+        return m;
+    }
+
+    /** Looked at before with no game and not pushed to since (a new release pushes its tag): no time limit. */
+    private static boolean recent(Map<String, String> checked, JSONObject r, long today) {
+        String v = checked.get(r.optString("full_name")), pushed = r.optString("pushed_at", "");
+        if (v == null || v.indexOf('|') < 0 || pushed.isEmpty()) return false;     /* no date to compare: looked at again */
+        return java.util.Arrays.asList(v.substring(v.indexOf('|') + 1).split("[|]")).contains(pushed);
+    }
+
+    /** Notes a repo with no game, keeping the last 3 dates seen for it (the API, the search page and the repo page give different ones). */
+    private static void mark(Map<String, String> checked, String full, long today, String pushed) {
+        String v = checked.get(full);
+        java.util.List<String> stamps = new java.util.ArrayList<>();
+        if (v != null && v.indexOf('|') >= 0) for (String x : v.substring(v.indexOf('|') + 1).split("[|]")) if (!x.isEmpty() && !x.equals(pushed)) stamps.add(x);
+        stamps.add(pushed);
+        while (stamps.size() > 3) stamps.remove(0);
+        checked.put(full, today + "|" + String.join("|", stamps));
+    }
+
+    /** Keeps at most CHECKED_MAX entries, dropping the ones looked at longest ago (a size cap, not an age limit). */
+    private static final int CHECKED_MAX = 800;
+
+    private static void saveChecked(SharedPreferences prefs, Map<String, String> checked, long today) {
+        try {
+            java.util.List<Map.Entry<String, String>> all = new java.util.ArrayList<>(checked.entrySet());
+            java.util.Collections.sort(all, (x, y) -> Long.compare(dayOf(y.getValue()), dayOf(x.getValue())));
+            JSONObject o = new JSONObject();
+            for (int i = 0; i < all.size() && i < CHECKED_MAX; i++) o.put(all.get(i).getKey(), all.get(i).getValue());
+            prefs.edit().putString("cat:checked", o.toString()).remove("cat:nogame").apply();
+        } catch (Exception ex) { /* not kept */ }
     }
 
     /** Blocking: looks at the other repos of each developer whose game is installed; true when the set of new games changed. */
     static boolean discover(Context c, SharedPreferences prefs, Uri tree) {
+        useNet(c);
         ContentResolver cr = c.getContentResolver();
         Map<String, String[]> src = sources(c, prefs);
         java.util.Set<String> known = new java.util.HashSet<>(), owners = new java.util.LinkedHashSet<>(), byAuthor = new java.util.TreeSet<>();
@@ -604,13 +1192,7 @@ final class Updates {
         for (String owner : owners) {
             if (++owned > 8 || limited) break;      /* GitHub's limit is hit: the rest waits for the next start */
             try {
-                JSONArray list;
-                HttpURLConnection h = CatalogueActivity.open("https://api.github.com/users/" + owner + "/repos?per_page=100&sort=pushed");
-                try (InputStream in = h.getInputStream()) {
-                    list = new JSONArray(CatalogueActivity.readAll(in, 4 << 20));
-                } finally {
-                    h.disconnect();
-                }
+                JSONArray list = ownerRepos(owner, new java.util.ArrayList<>());     /* github.com's page; the API only as a fallback */
                 int tried = 0;
                 for (int i = 0; i < list.length() && tried < 8; i++) {
                     JSONObject r = list.getJSONObject(i);
