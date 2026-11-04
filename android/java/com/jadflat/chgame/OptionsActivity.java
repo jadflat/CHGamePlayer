@@ -198,7 +198,7 @@ public class OptionsActivity extends Page {
     interface IntCallback { void run(int i); }
 
     private void pick(String title, String[] items, int current, IntCallback cb) {
-        new AlertDialog.Builder(this, Ui.dialogTheme()).setTitle(title)
+        new CardDialog.Builder(this).setTitle(title)
                 .setSingleChoiceItems(items, current, (d, i) -> { d.dismiss(); cb.run(i); build(); })
                 .setNegativeButton("Cancel", null)
                 .show();
@@ -212,7 +212,7 @@ public class OptionsActivity extends Page {
                 "Second key: " + Keymap.name(Options.quitKey2(prefs)),
                 "Hold for 2 s: " + (Options.quitHold(prefs) ? "on" : "off"),
                 Options.quitOff(prefs) ? "Turn the combo on" : "Turn the combo off" };
-        new AlertDialog.Builder(this, Ui.dialogTheme()).setTitle("Quit combo")
+        new CardDialog.Builder(this).setTitle("Quit combo")
                 .setItems(items, (d, i) -> {
                     if (i < 2) {
                         captureKey(i == 0);
@@ -229,12 +229,12 @@ public class OptionsActivity extends Page {
     private void captureKey(boolean first) {
         SharedPreferences prefs = getSharedPreferences(MainActivity.PREFS, MODE_PRIVATE);
         int other = first ? Options.quitKey2(prefs) : Options.quitKey1(prefs);
-        AlertDialog d = new AlertDialog.Builder(this, Ui.dialogTheme())
+        CardDialog d = new CardDialog.Builder(this)
                 .setTitle("Press the " + (first ? "first" : "second") + " key on the pad")
                 .setMessage("The two keys must differ. BACK always opens the menu.")
                 .setNegativeButton("Cancel", null).create();
         d.setOnKeyListener((dd, code, ev) -> {
-            if (ev.getAction() != KeyEvent.ACTION_DOWN) return true;
+            if (ev.getAction() != KeyEvent.ACTION_DOWN || ev.getRepeatCount() > 0) return true;
             if (code == KeyEvent.KEYCODE_BACK || code == other) {
                 android.widget.Toast.makeText(this, code == KeyEvent.KEYCODE_BACK ? "BACK cannot be a quit key"
                         : "That key is already the other quit key", android.widget.Toast.LENGTH_SHORT).show();
@@ -374,7 +374,7 @@ public class OptionsActivity extends Page {
     private void checkMedia() {
         Uri t = tree(), m = media();
         if (t == null || m == null) return;
-        AlertDialog wait = new AlertDialog.Builder(this, Ui.dialogTheme()).setTitle("ES-DE media")
+        CardDialog wait = new CardDialog.Builder(this).setTitle("ES-DE media")
                 .setMessage("Checking the games…").setCancelable(false).show();
         new Thread(() -> {
             android.content.ContentResolver cr = getContentResolver();
@@ -406,7 +406,7 @@ public class OptionsActivity extends Page {
     }
 
     private void showNeeds(java.util.List<Need> all, java.util.List<Need> missing) {
-        AlertDialog.Builder b = new AlertDialog.Builder(this, Ui.dialogTheme());
+        CardDialog.Builder b = new CardDialog.Builder(this);
         if (missing.isEmpty()) {
             b.setTitle("ES-DE media: all there")
                     .setMessage("All " + all.size() + " games have a video, a screenshot and a cover.")
@@ -427,7 +427,7 @@ public class OptionsActivity extends Page {
             items[i] = n.missing.isEmpty() ? n.title : n.title + "  ·  no " + n.missing;
             on[i] = ticked;
         }
-        AlertDialog dlg = new AlertDialog.Builder(this, Ui.dialogTheme()).setTitle(title)
+        CardDialog dlg = new CardDialog.Builder(this).setTitle(title)
                 .setMultiChoiceItems(items, on, (d, i, c) -> on[i] = c)
                 .setPositiveButton("Make", (d, w) -> {
                     java.util.List<Files.Entry> go = new java.util.ArrayList<>();
@@ -438,12 +438,12 @@ public class OptionsActivity extends Page {
                 .setNegativeButton("Cancel", null)
                 .show();
         /* ticks all, or none when all are ticked, keeping the list open */
-        dlg.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(v -> {
+        dlg.getButton(android.content.DialogInterface.BUTTON_NEUTRAL).setOnClickListener(v -> {
             boolean every = true;
             for (boolean x : on) every &= x;
             for (int i = 0; i < on.length; i++) {
                 on[i] = !every;
-                dlg.getListView().setItemChecked(i, !every);
+                dlg.setChecked(i, !every);
             }
         });
     }
@@ -454,7 +454,7 @@ public class OptionsActivity extends Page {
         cancelMaking = false;
         android.widget.TextView progress = Ui.text(this, "Starting…", 16, Ui.ON_SURFACE, Ui.REGULAR);
         progress.setPadding(Ui.dp(this, 24), Ui.dp(this, 16), Ui.dp(this, 24), Ui.dp(this, 8));
-        AlertDialog d = new AlertDialog.Builder(this, Ui.dialogTheme())
+        CardDialog d = new CardDialog.Builder(this)
                 .setTitle("Making ES-DE media")
                 .setView(progress)
                 .setCancelable(false)
@@ -489,7 +489,7 @@ public class OptionsActivity extends Page {
             runOnUiThread(() -> {
                 getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
                 d.dismiss();
-                new AlertDialog.Builder(this, Ui.dialogTheme()).setTitle("ES-DE media")
+                new CardDialog.Builder(this).setTitle("ES-DE media")
                         .setMessage(summary).setPositiveButton("OK", null).show();
             });
         }, "snaps").start();

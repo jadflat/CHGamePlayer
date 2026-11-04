@@ -55,7 +55,7 @@ public class MapButtonsActivity extends Page {
 
     /** Shows the name of each key pressed and the button it presses; Done or BACK closes. */
     private void testButtons(Keymap k) {
-        AlertDialog d = new AlertDialog.Builder(this, Ui.dialogTheme())
+        CardDialog d = new CardDialog.Builder(this)
                 .setTitle("Test buttons")
                 .setMessage("Press any button.")
                 .setNegativeButton("Done", null)
@@ -77,7 +77,7 @@ public class MapButtonsActivity extends Page {
 
     /** Waits for the next key and gives it to button i; BACK cancels. */
     private void capture(Keymap k, int i) {
-        AlertDialog.Builder b = new AlertDialog.Builder(this, Ui.dialogTheme())
+        CardDialog.Builder b = new CardDialog.Builder(this)
                 .setTitle(Keymap.NAMES[i])
                 .setMessage("Press the button for " + Keymap.NAMES[i] + ".\n\nBACK cancels.")
                 .setNegativeButton("Cancel", null);
@@ -87,7 +87,7 @@ public class MapButtonsActivity extends Page {
                 k.save(prefs, file);
                 build();
             });
-        AlertDialog d = b.create();
+        CardDialog d = b.create();
         d.setOnKeyListener((dialog, code, ev) -> {
             if (ev.getAction() != KeyEvent.ACTION_DOWN || ev.getRepeatCount() > 0) return true;
             if (code != KeyEvent.KEYCODE_BACK) {

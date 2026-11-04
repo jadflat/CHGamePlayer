@@ -524,7 +524,7 @@ public class CatalogueActivity extends Page {
         }
         final String[] list = new String[shown.size()];
         for (int k = 0; k < list.length; k++) list[k] = shown.get(k).name + " (" + shown.get(k).developer + ")";
-        android.app.AlertDialog.Builder b = new android.app.AlertDialog.Builder(this)
+        CardDialog.Builder b = new CardDialog.Builder(this)
                 .setTitle("Remove a game")
                 .setItems(list, (d, which) -> {
                     Item it = shown.get(which);
@@ -538,7 +538,7 @@ public class CatalogueActivity extends Page {
                         hideGame(it);
                         return;
                     }
-                    new android.app.AlertDialog.Builder(this)
+                    new CardDialog.Builder(this)
                             .setTitle("Remove " + it.name)
                             .setMessage("It is installed in your games folder. Delete the game file as well?\n(Its saves and data files are left alone.)")
                             .setPositiveButton("Delete file too", (d2, w2) -> {
@@ -584,7 +584,7 @@ public class CatalogueActivity extends Page {
             return;
         }
         final String[] list = names.toArray(new String[0]);
-        new android.app.AlertDialog.Builder(this)
+        new CardDialog.Builder(this)
                 .setTitle("Remove a developer")
                 .setItems(list, (d, which) -> {
                     String n = list[which];
@@ -614,7 +614,7 @@ public class CatalogueActivity extends Page {
         final android.widget.EditText in = new android.widget.EditText(this);
         in.setSingleLine(true);
         in.setHint("GitHub name, e.g. juliendorra");
-        new android.app.AlertDialog.Builder(this)
+        new CardDialog.Builder(this)
                 .setTitle("Add a developer")
                 .setView(in)
                 .setNegativeButton("Cancel", null)
@@ -906,7 +906,7 @@ public class CatalogueActivity extends Page {
                 if (!backGames.isEmpty()) sb.append("\nBrought back removed games: ").append(String.join(", ", backGames)).append("\n");
                 if (!restored.isEmpty()) sb.append("\nBrought back removed developers: ").append(String.join(", ", restored)).append("\n");
                 if (!nogame.isEmpty()) sb.append("\nChecked, no CHGame release:\n").append(String.join("\n", nogame));
-                new android.app.AlertDialog.Builder(this).setTitle("Search results")
+                new CardDialog.Builder(this).setTitle("Search results")
                         .setMessage(sb.toString()).setPositiveButton("OK", null).show();
             });
         }, "catalogue-search").start();

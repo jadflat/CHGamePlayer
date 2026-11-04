@@ -105,6 +105,9 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         super.onCreate(saved);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         view = new SurfaceView(this);
+        /* clickable makes it focusable; with a pad (non-touch mode) Android would paint its
+           default focus highlight, a 30% white veil, over the whole game */
+        view.setDefaultFocusHighlightEnabled(false);
         view.getHolder().addCallback(this);
         view.setOnTouchListener((v, ev) -> { lastTapX = ev.getX(); lastTapY = ev.getY(); return false; });
         view.setOnClickListener(v -> {
@@ -751,7 +754,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     /** The game has sent no frame for 3 s while it should run: say so, and offer a reset or a quit. */
     private void hangDialog() {
         menuOpen = true;    /* no more checks: the dialog is the way on */
-        new AlertDialog.Builder(this, Ui.dialogTheme())
+        new CardDialog.Builder(this)
                 .setTitle("The game stopped responding")
                 .setCancelable(false)
                 .setPositiveButton("Reset", (d, w) -> reset())
@@ -945,7 +948,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         String[] items = { "Resume", "Save state…", "Load state…", "Save screenshot",
                 clipOn || clipFull ? "Stop clip" : "Record clip",
                 fromFrontEnd() ? "Quit" : "Quit to game list" };
-        AlertDialog menuDlg = new AlertDialog.Builder(this, Ui.dialogTheme())
+        CardDialog menuDlg = new CardDialog.Builder(this)
                 .setTitle(title != null ? title : Saves.base(name))
                 .setItems(items, (d, which) -> {
                     if (which == 1 || which == 2) {
@@ -960,7 +963,6 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
                 .setOnCancelListener(d -> closeMenu())
                 .create();
         menuDlg.show();
-        menuDlg.getListView().setSelection(0);     /* the pad's cursor starts on Resume */
     }
 
     /** Quick save or quick load from a pad key: slot 1, as the menu's slot 1 (the game paused). */
@@ -1005,7 +1007,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         list.setPadding(pad, pad, pad, pad);
         ScrollView scroll = new ScrollView(this);
         scroll.addView(list);
-        final AlertDialog d = new AlertDialog.Builder(this, Ui.dialogTheme())
+        CardDialog d = new CardDialog.Builder(this)
                 .setTitle(save ? "Save state" : "Load state")
                 .setView(scroll)
                 .setOnCancelListener(c -> menu())

@@ -101,7 +101,7 @@ public class GameSettingsActivity extends Page {
 
     /** Asks, then deletes this game's file from the games folder; it may still be offered for download. */
     private void confirmRemove() {
-        new android.app.AlertDialog.Builder(this, Ui.dialogTheme())
+        new CardDialog.Builder(this)
                 .setTitle("Remove " + title + "?")
                 .setMessage("The game file is deleted from the games folder. Its saves stay.\n\nKeep it available to download again?")
                 .setPositiveButton("Keep available", (dlg, w) -> removeGame(true))
@@ -205,7 +205,7 @@ public class GameSettingsActivity extends Page {
     interface IntCallback { void run(int i); }
 
     private void pick(String t, String[] items, int current, IntCallback cb) {
-        new AlertDialog.Builder(this, Ui.dialogTheme()).setTitle(t)
+        new CardDialog.Builder(this).setTitle(t)
                 .setSingleChoiceItems(items, current, (d, i) -> { d.dismiss(); cb.run(i); build(); })
                 .setNegativeButton("Cancel", null)
                 .show();

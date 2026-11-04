@@ -31,7 +31,7 @@ public class TouchSettingsActivity extends Page {
         section("Controls");
         int cur = 0;
         for (int i = 0; i < Options.TOUCHES.length; i++) if (Options.TOUCHES[i].equals(Options.touch(prefs))) cur = i;
-        row("Show", Options.TOUCH_NAMES[cur], () -> new AlertDialog.Builder(this, Ui.dialogTheme()).setTitle("Touch controls")
+        row("Show", Options.TOUCH_NAMES[cur], () -> new CardDialog.Builder(this).setTitle("Touch controls")
                 .setSingleChoiceItems(Options.TOUCH_NAMES, cur0(), (d, i) -> {
                     d.dismiss();
                     prefs.edit().putString("touch", Options.TOUCHES[i]).apply();

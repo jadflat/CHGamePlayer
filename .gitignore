@@ -5,4 +5,4 @@ test/out/
 *.keystore
 *.idsig
 Starlift.sav
-chgame/
+/chgame/

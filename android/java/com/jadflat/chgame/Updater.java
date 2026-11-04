@@ -96,7 +96,7 @@ final class Updater {
 
     private static void offer(Activity a, SharedPreferences prefs, Found f) {
         String v = f.tag.replaceFirst("^[vV]", "");
-        new AlertDialog.Builder(a, Ui.dialogTheme())
+        new CardDialog.Builder(a)
                 .setTitle("Update available")
                 .setMessage("Version " + v + " is available (you have " + MainActivity.VERSION
                         + "). Open the download page, then tap the .apk there to install it.")

@@ -65,7 +65,7 @@ public class LaunchActivity extends Activity {
             return;
         }
         String title = c != null && !c.title.isEmpty() ? c.title : launched.getName();
-        new android.app.AlertDialog.Builder(this, Ui.dialogTheme())
+        new CardDialog.Builder(this)
                 .setTitle("Missing card file")
                 .setMessage(title + " needs " + TextUtils.join(", ", missing)
                         + " on the SD card. Put it in the games folder.")

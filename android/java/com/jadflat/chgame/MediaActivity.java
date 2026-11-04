@@ -156,7 +156,7 @@ public class MediaActivity extends Page {
 
     /** A screenshot or clip: share, export or delete it. */
     private void shotMenu(Shot s) {
-        new AlertDialog.Builder(this, Ui.dialogTheme()).setTitle(s.name)
+        new CardDialog.Builder(this).setTitle(s.name)
                 .setItems(new String[] { "Share", "Export…", "Delete" }, (d, w) -> {
                     if (w == 0) share(s);
                     else if (w == 1) export(Collections.singletonList(shotItem(s)));
@@ -168,7 +168,7 @@ public class MediaActivity extends Page {
 
     /** A save-state picture: copy it to the screenshots folder, or export it. */
     private void picMenu(Pic p) {
-        new AlertDialog.Builder(this, Ui.dialogTheme()).setTitle(p.label())
+        new CardDialog.Builder(this).setTitle(p.label())
                 .setItems(new String[] { "Copy to CHGame screenshots", "Export…" }, (d, w) -> {
                     if (w == 0) copyPic(p);
                     else export(Collections.singletonList(picItem(p)));

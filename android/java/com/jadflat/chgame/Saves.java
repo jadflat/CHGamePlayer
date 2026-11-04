@@ -234,7 +234,7 @@ final class Saves {
 
     /** no runs for No, or when the dialog is closed another way. */
     static void confirm(Activity a, String q, Runnable yes, Runnable no) {
-        new AlertDialog.Builder(a, Ui.dialogTheme()).setMessage(q)
+        new CardDialog.Builder(a).setMessage(q)
                 .setPositiveButton("Yes", (d, w) -> yes.run())
                 .setNegativeButton("No", (d, w) -> { if (no != null) no.run(); })
                 .setOnCancelListener(d -> { if (no != null) no.run(); })

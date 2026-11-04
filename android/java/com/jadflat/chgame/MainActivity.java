@@ -53,7 +53,7 @@ import java.util.concurrent.Executors;
  * Options, where everything else lives.
  */
 public class MainActivity extends Activity {
-    static final String VERSION = "1.50";
+    static final String VERSION = "1.58";
     static final String PREFS = "chgame";
 
     private SharedPreferences prefs;
@@ -541,7 +541,7 @@ public class MainActivity extends Activity {
                 refresh();
                 /* a dialog, not a toast: it stays until it is dismissed, so it can't be missed */
                 if (msg != null && prefs.getBoolean("showNew", true))
-                    new android.app.AlertDialog.Builder(this, Ui.dialogTheme()).setTitle("New games").setMessage(msg)
+                    new CardDialog.Builder(this).setTitle("New games").setMessage(msg)
                             .setPositiveButton("OK", null).setOnDismissListener(d -> recheckNew(freshRepos)).show();
             });
         }, "new-games").start();
@@ -627,12 +627,15 @@ public class MainActivity extends Activity {
         if (shown < 0 || shown >= games.size()) return;
         Files.Entry e = games.get(shown);
         if (isNew(e)) { installNew(e); return; }
+        if (syncing) return;
         String file = fileName(e);
         artUpdate.setEnabled(false);
         artUpdate.setText("Updating…");
+        syncing = true;
         new Thread(() -> {
             String err = Updates.apply(this, prefs, e, file);
             runOnUiThread(() -> {
+                syncing = false;
                 artUpdate.setEnabled(true);
                 if (isFinishing()) return;
                 Saves.toast(this, err == null ? displayTitle(e) + " updated" : "Could not update: " + err);
@@ -719,7 +722,7 @@ public class MainActivity extends Activity {
     private void offerTouch() {
         if (touchOffered || !"off".equals(Options.touch(prefs)) || hasPad()) return;
         touchOffered = true;
-        new android.app.AlertDialog.Builder(this, Ui.dialogTheme())
+        new CardDialog.Builder(this)
                 .setTitle("No controller found")
                 .setMessage("Show touch controls on the screen in games? They hide again once a controller "
                         + "is used. Options → Touch controls changes this later.")
@@ -1183,7 +1186,7 @@ public class MainActivity extends Activity {
         field.setSingleLine(true);
         field.setHint("Part of a title");
         field.setPadding(Ui.dp(this, 24), Ui.dp(this, 16), Ui.dp(this, 24), Ui.dp(this, 8));
-        new android.app.AlertDialog.Builder(this, Ui.dialogTheme())
+        new CardDialog.Builder(this)
                 .setTitle("Search the games")
                 .setView(field)
                 .setPositiveButton("OK", (d, w) -> findTitle(field.getText().toString()))
@@ -1573,7 +1576,57 @@ public class MainActivity extends Activity {
         if (pos < 0 || pos >= games.size()) return;
         Ui.sfx(this, true);
         Files.Entry e = games.get(pos);
+        if (syncing) { Saves.toast(this, "Updating… please wait"); return; }
         if (isNew(e)) { installNew(e); return; }
+        String[] upd = Updates.pending(prefs, fileName(e));
+        if (upd != null && !syncing) {
+            updateCard(e, upd[0]);
+            return;
+        }
+        playNow(e);
+    }
+
+    /** The update prompt: the game's name, "Update now" (highlighted) and "Play without updating". */
+    private void updateCard(Files.Entry e, String tag) {
+        final int[] choice = {-1};      /* -1 = dismissed (Back), 0 = play as is, 1 = update */
+        new CardDialog.Builder(this)
+                .setTitle(displayTitle(e))
+                .setMessage("Update available (" + tag + ")")
+                .setPositiveButton("Update now", (d, w) -> choice[0] = 1)
+                .setNegativeButton("Play without updating", (d, w) -> choice[0] = 0)
+                .setDefaultButton(android.content.DialogInterface.BUTTON_POSITIVE)
+                /* act only once the card's window is gone, so nothing of it lingers behind the game */
+                .setOnDismissListener(d -> {
+                    if (choice[0] == 1) updateThenPlay(e);
+                    else if (choice[0] == 0) getWindow().getDecorView().post(() -> playNow(e));
+                })
+                .show();
+    }
+
+    /** Fetches the update for e, then starts it (or starts the old copy if the update fails). */
+    private void updateThenPlay(Files.Entry e) {
+        if (syncing) return;
+        syncing = true;
+        Saves.toast(this, "Updating " + displayTitle(e) + "…");
+        final CharSequence was = artUpdate.getText();
+        artUpdate.setEnabled(false);
+        artUpdate.setText("Updating…");
+        final String file = fileName(e);
+        new Thread(() -> {
+            String err = Updates.apply(this, prefs, e, file);
+            runOnUiThread(() -> {
+                syncing = false;
+                artUpdate.setEnabled(true);
+                artUpdate.setText(was);
+                if (isFinishing()) return;
+                carts.remove(e.uri);
+                Saves.toast(this, err == null ? displayTitle(e) + " updated" : "Could not update: " + err);
+                playNow(e);        /* the list refreshes in onResume when the game closes */
+            });
+        }, "update-game").start();
+    }
+
+    private void playNow(Files.Entry e) {
         /* a game that names card files not in the games folder: say so, and let the player start anyway */
         Cart c = carts.get(e.uri);
         if (c == null) {
@@ -1581,7 +1634,7 @@ public class MainActivity extends Activity {
         }
         final Cart cart0 = c;
         final String fn0 = fileName(e);
-        if (syncing) return;        /* a second tap while the card files are being fetched */
+        if (syncing) { Saves.toast(this, "Updating… please wait"); return; }   /* a second tap while files are fetched */
         syncing = true;
         final Uri uri0 = e.uri;
         new Thread(() -> {      /* the card files the game needs, fetched first if missing */
@@ -1608,7 +1661,7 @@ public class MainActivity extends Activity {
             start(pos);
             return;
         }
-        new android.app.AlertDialog.Builder(this, Ui.dialogTheme())
+        new CardDialog.Builder(this)
                 .setTitle("Missing card file")
                 .setMessage(displayTitle(e) + " needs " + TextUtils.join(", ", missing)
                         + " on the SD card. Put it in the games folder.")
@@ -1686,11 +1739,16 @@ public class MainActivity extends Activity {
         select(pos, row);
         Files.Entry e = games.get(pos);
         boolean fav = favs.contains(e.path), hid = hidden.contains(e.path);
-        String[] items = { "Play", fav ? "Remove from favourites" : "\u2605 Add to favourites",
-                hid ? "Show in the list again" : "Hide", "Saves…", "Game settings…", "About this game" };
-        new android.app.AlertDialog.Builder(this, Ui.dialogTheme())
+        String[] upd = isNew(e) ? null : Updates.pending(prefs, fileName(e));
+        List<String> items = new ArrayList<>(java.util.Arrays.asList("Play", fav ? "Remove from favourites" : "★ Add to favourites",
+                hid ? "Show in the list again" : "Hide", "Saves…", "Game settings…", "About this game"));
+        if (upd != null) items.add(1, "Update to " + upd[0]);
+        final int u = upd != null ? 1 : 0;      /* the Update row shifts the others down by one */
+        new CardDialog.Builder(this)
                 .setTitle(displayTitle(e))
-                .setItems(items, (d, which) -> {
+                .setItems(items.toArray(new String[0]), (d, which) -> {
+                    if (u == 1 && which == 1) { updateSelected(); return; }
+                    if (which > 1) which -= u;
                     if (which == 0) play(pos);
                     else if (which == 1) toggleFavourite(pos);
                     else if (which == 2) toggleHidden(pos);
@@ -1728,7 +1786,7 @@ public class MainActivity extends Activity {
         long time = Stats.time(this, fileName(e)), last = Stats.last(this, fileName(e));
         s.append("\nPlayed: ").append(time > 0 ? Stats.duration(time) : last > 0 ? "under a minute" : "not yet");
         if (last > 0) s.append(", last ").append(Stats.when(last));
-        new android.app.AlertDialog.Builder(this, Ui.dialogTheme()).setTitle(displayTitle(e))
+        new CardDialog.Builder(this).setTitle(displayTitle(e))
                 .setMessage(s).setPositiveButton("OK", null).show();
     }
 
