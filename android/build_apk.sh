@@ -22,6 +22,9 @@ ZIG=${ZIG:-zig}
 VERSION=$(sed -n 's/.*android:versionName="\([^"]*\)".*/\1/p' android/AndroidManifest.xml)
 JV=$(sed -n 's/.*static final String VERSION = "\([^"]*\)".*/\1/p' android/java/com/jadflat/chgame/MainActivity.java)
 [ "$JV" = "$VERSION" ] || { echo "MainActivity.VERSION ($JV) != manifest versionName ($VERSION)"; exit 1; }
+# a test run with --sys pointed into assets leaves a card copy (tens of MB) there: never pack it
+STRAY=$(find android/assets -type d -name sdcard 2>/dev/null)
+[ -z "$STRAY" ] || { echo "stray card folder in assets (delete it): $STRAY"; exit 1; }
 OUT=build/apk
 rm -rf $OUT
 mkdir -p $OUT/obj $OUT/stubs $OUT/res $OUT/classes $OUT/dex $OUT/lib/arm64-v8a

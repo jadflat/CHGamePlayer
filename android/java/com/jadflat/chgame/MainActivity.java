@@ -53,7 +53,7 @@ import java.util.concurrent.Executors;
  * Options, where everything else lives.
  */
 public class MainActivity extends Activity {
-    static final String VERSION = "1.63";
+    static final String VERSION = "1.64";
     static final String PREFS = "chgame";
 
     private SharedPreferences prefs;

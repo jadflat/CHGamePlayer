@@ -49,7 +49,7 @@ public class LaunchActivity extends Activity {
         }
         new CardDialog.Builder(this)
                 .setTitle("Start a game?")
-                .setMessage((who == null ? "An app" : who) + " wants to start a game in CHGame Player.")
+                .setMessage((who == null ? "An app" : label(who)) + " wants to start a game in CHGame Player.")
                 .setPositiveButton("Allow", (d, w) -> {
                     if (who != null) getSharedPreferences(MainActivity.PREFS, MODE_PRIVATE).edit().putBoolean(ALLOW + who, true).apply();
                     go(uri);
@@ -68,6 +68,19 @@ public class LaunchActivity extends Activity {
             return r != null && "android-app".equals(r.getScheme()) && r.getHost() != null && !r.getHost().isEmpty() ? r.getHost() : null;
         } catch (RuntimeException e) {
             return null;
+        }
+    }
+
+    /** The calling app's name as the launcher shows it ("ES-DE"), or its package name when it cannot be seen
+        (package visibility: the manifest's <queries> covers launcher apps only). */
+    private String label(String pkg) {
+        try {
+            android.content.pm.PackageManager pm = getPackageManager();
+            CharSequence l = pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0));
+            String s = l == null ? "" : l.toString().trim();
+            return s.isEmpty() ? pkg : s;
+        } catch (Exception e) {
+            return pkg;
         }
     }
 

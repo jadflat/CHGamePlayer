@@ -4,8 +4,8 @@
      (a document tree). -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.jadflat.chgame"
-    android:versionCode="163"
-    android:versionName="1.63">
+    android:versionCode="164"
+    android:versionName="1.64">
 
     <uses-permission android:name="android.permission.INTERNET" />
 
@@ -13,6 +13,13 @@
     <uses-feature android:name="android.hardware.gamepad" android:required="false" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
     <uses-feature android:name="android.software.leanback" android:required="false" />
+    <!-- launcher apps are visible, so the launch prompt can name the calling front end (ES-DE) -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
 
     <application
         android:label="@string/app_name"
