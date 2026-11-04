@@ -321,7 +321,7 @@ final class Updates {
     static void resetDismissed(SharedPreferences p) {
         SharedPreferences.Editor ed = p.edit();
         for (String k : p.getAll().keySet()) if (k.startsWith("newdone:")) ed.remove(k);
-        ed.remove("newAt2").remove("newAt13").remove("searchAt161").remove("newSeen").apply();
+        ed.remove("newAt2").remove("newAt14").remove("searchAt162").remove("newSeen").apply();
     }
 
     /** Copies the bundled catalogue's games (those with a repo and a bundled file) into "cat:bundled", once per app version. */
@@ -816,7 +816,7 @@ final class Updates {
         final Set<String> seen = new java.util.HashSet<>();                       /* every repo the searches and owner lists named */
         final java.util.List<String> errors = new java.util.ArrayList<>();
         final java.util.List<String> sources = new java.util.ArrayList<>();       /* "API search 2", "web search 3" ... */
-        int queries, listed, looked, skipped, junk, owners, left, ownersLeft;
+        int queries, listed, looked, skipped, released, junk, owners, left, ownersLeft;
         boolean limited, searchLimited, webLimited, fromCache;
         String cacheDate = "";
 
@@ -824,7 +824,8 @@ final class Updates {
             return (fromCache ? "Search was down: used the repo list saved " + cacheDate + ". " : "")
                     + "Sources: " + (sources.isEmpty() ? "none answered" : String.join(", ", sources)) + ". "
                     + listed + " repos named" + (owners > 0 ? ", " + owners + " developers' repo lists read" : "")
-                    + ", looked at " + looked + (skipped > 0 ? ", skipped " + skipped + " unchanged since checked" : "")
+                    + ", looked at " + looked + (released > 0 ? " (" + released + " with a new release since checked)" : "")
+                    + (skipped > 0 ? ", skipped " + skipped + " unchanged since checked" : "")
                     + (junk > 0 ? ", ignored " + junk + " unrelated" : "")
                     + (left > 0 || ownersLeft > 0 ? ", " + (left + ownersLeft) + " left for next time" : "")
                     + ". API calls this hour: " + apiUsed() + " of the app's " + API_PER_HOUR;
@@ -947,13 +948,17 @@ final class Updates {
         Set<String> looked = new java.util.HashSet<>();
         Map<String, JSONObject> all = new java.util.LinkedHashMap<>(repos);
         for (JSONObject r : fromOwners.values()) all.putIfAbsent(r.optString("full_name"), r);
+        java.util.List<JSONObject> skippedNow = new java.util.ArrayList<>();
         for (JSONObject r : all.values()) {
             String full = r.optString("full_name");
             if (known.contains(full)) continue;
             if (junk(r)) { h.junk++; continue; }
-            if (recent(checked, r, today)) { h.skipped++; continue; }
-            if (looked.add(full)) todo.add(r);
+            if (!looked.add(full)) continue;
+            if (recent(checked, r, today)) { skippedNow.add(r); continue; }
+            todo.add(r);
         }
+        /* a release made in GitHub's web form may not change pushed_at: the skipped ones' latest release tags are compared */
+        todo.addAll(newRelease(h, skippedNow, checked, deadline, say));
         final Set<String> owners0 = gameOwners;
         java.util.Collections.sort(todo, (a, b) -> score(b, owners0) - score(a, owners0));     /* stable: newest first among equals */
         if (todo.size() > maxLook) { h.left += todo.size() - maxLook; todo = new java.util.ArrayList<>(todo.subList(0, maxLook)); }
@@ -962,13 +967,14 @@ final class Updates {
         /* siblings: the repo pages of developers whose game was just found (not listed yet) */
         Set<String> newOwners = new java.util.LinkedHashSet<>();
         for (JSONObject[] g : h.games) if (!listedOwners.contains(ownerOf(g[0]))) newOwners.add(ownerOf(g[0]));
-        java.util.List<JSONObject> more = new java.util.ArrayList<>();
+        java.util.List<JSONObject> more = new java.util.ArrayList<>(), skippedSib = new java.util.ArrayList<>();
         for (JSONObject r : listOwners(h, newOwners, known, deadline, say, listedOwners, notReached).values()) {
             String full = r.optString("full_name");
             if (junk(r) || !looked.add(full)) continue;
-            if (recent(checked, r, today)) { h.skipped++; continue; }
+            if (recent(checked, r, today)) { skippedSib.add(r); continue; }
             more.add(r);
         }
+        more.addAll(newRelease(h, skippedSib, checked, deadline, say));
         h.ownersLeft = 0;
         for (String o : notReached) if (!extraOwners.contains(o)) h.ownersLeft++;
         prefs.edit().putString("cat:ownersTodo", String.join(",", notReached)).apply();
@@ -1032,13 +1038,14 @@ final class Updates {
                     if (hasGame(rel)) h.games.add(new JSONObject[] { r, rel });
                     else {
                         h.noGame.add(full + (rel == null ? " (no release)" : " (" + rel.optString("tag_name") + ": no .CHG)"));
-                        mark(checked, full, today, r.optString("pushed_at"));
+                        mark(checked, full, today, r.optString("pushed_at"), rel == null ? "-" : rel.optString("tag_name", "-"),
+                                rel == null || rel.optJSONArray("assets") == null ? 0 : Math.min(30, rel.optJSONArray("assets").length()));
                     }
                 }
             } catch (Exception ex) {
                 synchronized (h) {
                     String m = String.valueOf(ex);
-                    if (m.contains("HTTP 404")) { h.looked++; h.noGame.add(full + " (gone)"); mark(checked, full, today, r.optString("pushed_at")); }
+                    if (m.contains("HTTP 404")) { h.looked++; h.noGame.add(full + " (gone)"); mark(checked, full, today, r.optString("pushed_at"), "-", 0); }
                     else if (limitError(ex)) { h.limited = true; h.left++; }
                     else { h.left++; h.errors.add(full + ": " + (ex instanceof Layout ? "github.com changed its page layout: " : "") + ex.getMessage()); }
                 }
@@ -1116,14 +1123,115 @@ final class Updates {
         return java.util.Arrays.asList(v.substring(v.indexOf('|') + 1).split("[|]")).contains(pushed);
     }
 
-    /** Notes a repo with no game, keeping the last 3 dates seen for it (the API, the search page and the repo page give different ones). */
-    private static void mark(Map<String, String> checked, String full, long today, String pushed) {
+    /** The latest release tag stored with a checked repo ("-" for none), or null for an entry made before tags were kept. */
+    static String storedTag(String v) {
+        if (v == null) return null;
+        for (String x : v.split("[|]")) if (x.startsWith("T=")) return x.substring(2);
+        return null;
+    }
+
+    /**
+     * Notes a repo with no game: the day, its latest release tag ("T=<tag>", "-" for none), how many files that release
+     * had ("N=<n>") and the last 3 pushed dates seen for it (the API, the search page and the repo page give different ones).
+     */
+    static void mark(Map<String, String> checked, String full, long today, String pushed, String tag, int files) {
         String v = checked.get(full);
         java.util.List<String> stamps = new java.util.ArrayList<>();
-        if (v != null && v.indexOf('|') >= 0) for (String x : v.substring(v.indexOf('|') + 1).split("[|]")) if (!x.isEmpty() && !x.equals(pushed)) stamps.add(x);
+        if (v != null && v.indexOf('|') >= 0)
+            for (String x : v.substring(v.indexOf('|') + 1).split("[|]"))
+                if (!x.isEmpty() && !x.startsWith("T=") && !x.startsWith("N=") && !x.equals(pushed)) stamps.add(x);
         stamps.add(pushed);
         while (stamps.size() > 3) stamps.remove(0);
-        checked.put(full, today + "|" + String.join("|", stamps));
+        checked.put(full, today + "|T=" + cleanTag(tag) + "|N=" + files + "|" + String.join("|", stamps));
+    }
+
+    /** A tag as kept in cat:checked: "-" for none, no "|" (the field separator). */
+    static String cleanTag(String tag) {
+        return tag == null || tag.isEmpty() ? "-" : tag.replace("|", "");
+    }
+
+    /** The number of release files stored with a checked repo, or -1 when unknown. */
+    static int storedFiles(String v) {
+        if (v != null) for (String x : v.split("[|]")) if (x.startsWith("N=")) try { return Integer.parseInt(x.substring(2)); } catch (NumberFormatException e) { return -1; }
+        return -1;
+    }
+
+    /**
+     * The latest release tag from github.com/<repo>/releases/latest without following its redirect (one small web request,
+     * no API call, no page body): "-" when the repo has no release. Throws on a limit or a network error.
+     */
+    static String probeTag(String full) throws IOException {
+        if (!open("web")) throw new Blocked("web back-off");
+        HttpURLConnection c = (HttpURLConnection) new java.net.URL("https://github.com/" + full + "/releases/latest").openConnection();
+        c.setInstanceFollowRedirects(false);
+        c.setRequestMethod("HEAD");
+        c.setConnectTimeout(8000);
+        c.setReadTimeout(8000);
+        c.setRequestProperty("User-Agent", "CHGamePlayer/" + MainActivity.VERSION);
+        try {
+            int code = c.getResponseCode();
+            if (code == 429 || code == 403) { backOff("web", c); throw new IOException("HTTP " + code); }
+            if (code == 404) return "-";
+            String loc = c.getHeaderField("Location");
+            if (code < 300 || code > 399 || loc == null) throw new IOException("HTTP " + code);
+            int at = loc.lastIndexOf("/tag/");
+            return at < 0 ? "-" : Uri.decode(loc.substring(at + 5));
+        } finally {
+            c.disconnect();
+        }
+    }
+
+    interface Count { int get() throws IOException; }
+
+    /**
+     * Whether a checked repo should be looked at again: stored tag had (null for a 1.61 entry) and file count files (-1 when
+     * unknown), against the tag probed now; count gives the release's file count now (asked only for the same release).
+     */
+    static boolean changed(String had, int files, String tag, Count count) throws IOException {
+        if (had == null) return !tag.equals("-");          /* an old entry: looked at again if it has a release */
+        if (!tag.equals(had)) return true;                  /* a new release */
+        if (tag.equals("-")) return false;                  /* still none */
+        return files < 0 || count.get() != files;           /* the same release: files added since */
+    }
+
+    /** How many files a release has, from its github.com expanded_assets page (no API call). */
+    static int assetCount(String full, String tag) throws IOException {
+        String html = fetch("https://github.com/" + full + "/releases/expanded_assets/" + Uri.encode(tag));
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile("/releases/download/[^/\"]+/([^\"?]+)\"").matcher(html);
+        while (m.find() && seen.size() < 30) seen.add(m.group(1));
+        return seen.size();
+    }
+
+    /**
+     * Of the repos skipped as unchanged, the ones whose latest release tag differs from the one stored when they were
+     * checked (a release made in GitHub's web form may not change pushed_at), or whose release has a different number of
+     * files (they are often uploaded after the release is made). Probed six at a time until the deadline;
+     * the rest stay skipped. Counts h.skipped and h.released.
+     */
+    private static java.util.List<JSONObject> newRelease(Hunt h, java.util.List<JSONObject> skipped, Map<String, String> checked,
+                                                         long deadline, java.util.function.Consumer<String> say) {
+        java.util.List<JSONObject> out = java.util.Collections.synchronizedList(new java.util.ArrayList<>());
+        if (skipped.isEmpty()) return out;
+        if (say != null) say.accept("Checking " + skipped.size() + " repos for new releases");
+        java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(6);
+        java.util.List<java.util.concurrent.Future<?>> jobs = new java.util.ArrayList<>();
+        for (JSONObject r : skipped) jobs.add(pool.submit(() -> {
+            String full = r.optString("full_name"), had;
+            int files;
+            synchronized (h) { had = storedTag(checked.get(full)); files = storedFiles(checked.get(full)); }
+            boolean again = false;
+            if (System.currentTimeMillis() < deadline) try {
+                final String tag = cleanTag(probeTag(full));
+                again = changed(had, files, tag, () -> assetCount(full, tag));
+            } catch (Exception ex) {
+                if (limitError(ex)) synchronized (h) { h.limited = true; }
+            }
+            synchronized (h) { if (again) { h.released++; out.add(r); } else h.skipped++; }
+        }));
+        for (java.util.concurrent.Future<?> f : jobs) try { f.get(); } catch (Exception ex) { /* counted inside */ }
+        pool.shutdown();
+        return new java.util.ArrayList<>(out);
     }
 
     /** Keeps at most CHECKED_MAX entries, dropping the ones looked at longest ago (a size cap, not an age limit). */
