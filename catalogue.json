@@ -8,11 +8,13 @@
       "files": [
         {
           "name": "Starlift.CHG",
-          "url": "https://github.com/jadflat/Starlift/releases/download/v0.24/Starlift.CHG"
+          "url": "https://github.com/jadflat/Starlift/releases/download/v0.24/Starlift.CHG",
+          "sha256": "28427525bbb40748585e3f41c47336bb231967a5826fbdace2caa0270fa8c9c4"
         },
         {
           "name": "STARLIFT.DAT",
-          "url": "https://github.com/jadflat/Starlift/releases/download/v0.24/STARLIFT.DAT"
+          "url": "https://github.com/jadflat/Starlift/releases/download/v0.24/STARLIFT.DAT",
+          "sha256": "bf9b067ad6c6d4ccc3a29c5af19a5f7e5e25250f9fe18ccda0feb92206962972"
         }
       ],
       "chgTitle": "STARLIFT",
@@ -27,7 +29,8 @@
       "files": [
         {
           "name": "CHix.CHG",
-          "url": "https://github.com/jadflat/CHix/releases/download/v1.2.3/CHix.CHG"
+          "url": "https://github.com/jadflat/CHix/releases/download/v1.2.3/CHix.CHG",
+          "sha256": "b6f7d127387038c4b69145b9cf33b062e2d6ee46c0127148915ce4bc5c4eaa5f"
         }
       ],
       "chgTitle": "CHix",
@@ -42,7 +45,8 @@
       "files": [
         {
           "name": "CHarth.CHG",
-          "url": "https://github.com/jadflat/CHarth/releases/download/v1.0/CHarth.CHG"
+          "url": "https://github.com/jadflat/CHarth/releases/download/v1.0/CHarth.CHG",
+          "sha256": "ebdbd8bbd2a9d1de3d1646c76b03f44c4689f48174a3bff967832c544e4a12de"
         }
       ],
       "chgTitle": "CHarth",

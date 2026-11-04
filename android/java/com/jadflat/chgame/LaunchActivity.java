@@ -39,19 +39,44 @@ public class LaunchActivity extends Activity {
             finish();
             return;
         }
-        /* Ask once per calling app before anything is copied or run. The referrer is what the caller says it is and
-           can be spoofed: this stops accidents and casual misuse (a stray link, an app that was not meant to start
-           games), not a determined app. With no referrer there is nothing to remember, so it asks every time. */
-        String who = referrer();
-        if (who != null && (who.equals(getPackageName()) || getSharedPreferences(MainActivity.PREFS, MODE_PRIVATE).getBoolean(ALLOW + who, false))) {
+        /* Who is asking is taken from the file itself, not from what the caller says: the app that serves the
+           content:// address is resolved by the system and cannot be faked, and the caller must hand over read access
+           with the intent (so it cannot borrow the access this app already has to the games folder). The one-time
+           Allow is remembered for that app. A file served by a shared system provider (storage, downloads) says
+           nothing about the caller, so then it asks every time; the referrer is only shown, never trusted. */
+        String provider = null;
+        boolean system = false;
+        try {
+            android.content.pm.ProviderInfo pi = getPackageManager().resolveContentProvider(uri.getAuthority(), 0);
+            if (pi != null) {
+                provider = pi.packageName;
+                system = pi.applicationInfo != null && (pi.applicationInfo.flags & android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0;
+            }
+        } catch (RuntimeException e) {
+            provider = null;
+        }
+        final String who = provider;
+        boolean granted = (in.getFlags() & Intent.FLAG_GRANT_READ_URI_PERMISSION) != 0;
+        boolean allowed = who != null && getSharedPreferences(MainActivity.PREFS, MODE_PRIVATE).getBoolean(ALLOW + who, false);
+        int what = decide(granted, who, system, getPackageName(), allowed);
+        if (what == REFUSE) {
+            Toast.makeText(this, "The game was not started: the app that sent it did not share the file.", Toast.LENGTH_LONG).show();
+            finish();
+            return;
+        }
+        if (what == RUN) {
             go(uri);
             return;
         }
+        String ref = referrer();
+        String asker = what == ASK_REMEMBER ? label(who)
+                : "An app" + (ref != null && !ref.equals(getPackageName()) ? " (it says it is " + label(ref) + ")" : "");
         new CardDialog.Builder(this)
                 .setTitle("Start a game?")
-                .setMessage((who == null ? "An app" : label(who)) + " wants to start a game in CHGame Player.")
+                .setMessage(asker + " wants to start a game in CHGame Player."
+                        + (what == ASK_REMEMBER ? "" : " This will be asked every time."))
                 .setPositiveButton("Allow", (d, w) -> {
-                    if (who != null) getSharedPreferences(MainActivity.PREFS, MODE_PRIVATE).edit().putBoolean(ALLOW + who, true).apply();
+                    if (what == ASK_REMEMBER) getSharedPreferences(MainActivity.PREFS, MODE_PRIVATE).edit().putBoolean(ALLOW + who, true).apply();
                     go(uri);
                 })
                 .setNegativeButton("Cancel", (d, w) -> finish())
@@ -60,6 +85,20 @@ public class LaunchActivity extends Activity {
     }
 
     private static final String ALLOW = "launch-ok:";
+    static final int REFUSE = 0, RUN = 1, ASK_REMEMBER = 2, ASK_EACH_TIME = 3;
+
+    /**
+     * What a launch may do. granted: the intent hands over read access to the file; provider: the package serving the
+     * file (null when it cannot be seen); system: that package is part of the system (a shared provider such as
+     * storage or downloads); allowed: the user allowed that provider's app before.
+     */
+    static int decide(boolean granted, String provider, boolean system, String self, boolean allowed) {
+        if (!granted) return REFUSE;                    /* would read the file with this app's own access */
+        if (provider == null || provider.isEmpty()) return ASK_EACH_TIME;
+        if (provider.equals(self)) return REFUSE;       /* this app serves no files: an address back into it is not a launch */
+        if (system) return ASK_EACH_TIME;
+        return allowed ? RUN : ASK_REMEMBER;
+    }
 
     /** The package that started this activity, or null when it did not say. */
     private String referrer() {

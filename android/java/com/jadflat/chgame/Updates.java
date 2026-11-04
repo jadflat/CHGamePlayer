@@ -1432,6 +1432,8 @@ final class Updates {
                 h.disconnect();
             }
             byte[] data = mem.toByteArray();
+            String why = Pins.check(c, from, null, Pins.sha256(data, data.length));      /* before anything is written */
+            if (why != null) return why;
             if (ChgPackage.isPackage(data)) {
                 data = ChgPackage.toChg(data, ChgPackage.coverFor(c, null, newFile(n)));
                 if (data == null) return "the package holds no game for this board";
@@ -1515,14 +1517,14 @@ final class Updates {
         if (p == null || p.length < 3) return "no update";
         try {
             HttpURLConnection h;
+            String from = "https://github.com/" + p[1] + "/releases/download/" + Uri.encode(p[0]) + "/" + Uri.encode(p[2]);
             try {
-                h = CatalogueActivity.open("https://github.com/" + p[1] + "/releases/download/"
-                        + Uri.encode(p[0]) + "/" + Uri.encode(p[2]));
+                h = CatalogueActivity.open(from);
             } catch (IOException first) {
                 /* the release names its game file differently (MysticBalloon-1.4.1.chgame): look at its asset list */
                 String asset = findAsset(p[1], p[0]);
                 if (asset == null) throw first;
-                h = CatalogueActivity.open("https://github.com/" + p[1] + "/releases/download/"
+                h = CatalogueActivity.open(from = "https://github.com/" + p[1] + "/releases/download/"
                         + Uri.encode(p[0]) + "/" + asset);
             }
             ByteArrayOutputStream mem = new ByteArrayOutputStream();
@@ -1536,6 +1538,8 @@ final class Updates {
                 h.disconnect();
             }
             byte[] head = mem.toByteArray();
+            String why = Pins.check(c, from, null, Pins.sha256(head, head.length));      /* before the installed file is touched */
+            if (why != null) return why;
             if (ChgPackage.isPackage(head)) {          /* the release ships a .chgame package: pack the .CHG from it */
                 head = ChgPackage.toChg(head, ChgPackage.coverFor(c, e.uri, file));
                 if (head == null) return "the package holds no game for this board";
@@ -1624,12 +1628,22 @@ final class Updates {
         HttpURLConnection h = null;
         InputStream in = null;
         long len = -1;
+        String from = null;             /* the release address actually read: its checksum is checked before writing */
         if (repo != null) {
-            String[] urls = tag == null ? new String[] { "latest/download" }      /* tags are stored with or without the v */
-                    : new String[] { "download/" + Uri.encode(tag), "download/v" + Uri.encode(tag) };
-            for (String u : urls) {      /* the installed version's release, else the latest one */
+            if (tag == null) {          /* the latest release, by its tag: a checksum belongs to one release */
                 try {
-                    h = CatalogueActivity.open("https://github.com/" + repo + "/releases/" + u + "/" + Uri.encode(name));
+                    String t = probeTag(repo);
+                    if (!"-".equals(t)) tag = t;
+                } catch (IOException ex) {
+                    /* no tag: nothing remote */
+                }
+            }
+            String[] urls = tag == null ? new String[0]      /* tags are stored with or without the v */
+                    : new String[] { "download/" + Uri.encode(tag), "download/v" + Uri.encode(tag) };
+            for (String u : urls) {      /* the installed version's release */
+                try {
+                    from = "https://github.com/" + repo + "/releases/" + u + "/" + Uri.encode(name);
+                    h = CatalogueActivity.open(from);
                     in = h.getInputStream();
                     len = h.getContentLengthLong();
                     break;
@@ -1637,6 +1651,7 @@ final class Updates {
                     if (h != null) h.disconnect();
                     h = null;
                     in = null;
+                    from = null;
                 }
             }
         }
@@ -1658,6 +1673,8 @@ final class Updates {
                 if (m == n && (len < 0 || len == mineLen) && java.util.Arrays.equals(mine, head)) return true;
             }
             long total = n;
+            java.security.MessageDigest sum = Pins.sha();
+            sum.update(head, 0, n);
             try (OutputStream out = new java.io.FileOutputStream(tmp)) {
                 out.write(head, 0, n);
                 byte[] buf = new byte[1 << 16];
@@ -1665,9 +1682,11 @@ final class Updates {
                     total += r;
                     if (total > (128L << 20)) throw new IOException("file too big");
                     out.write(buf, 0, r);
+                    sum.update(buf, 0, r);
                 }
             }
             if (total == 0) return doc != null;
+            if (from != null && Pins.check(c, from, null, Pins.hex(sum.digest())) != null) return doc != null;     /* a file that fails its checksum is not written */
             if (doc == null) {
                 doc = android.provider.DocumentsContract.createDocument(cr, android.provider.DocumentsContract.buildDocumentUriUsingTree(
                         tree, android.provider.DocumentsContract.getTreeDocumentId(tree)), "application/octet-stream", name);

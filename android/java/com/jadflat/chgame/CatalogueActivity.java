@@ -109,7 +109,11 @@ public class CatalogueActivity extends Page {
             JSONArray games = new JSONArray();
             for (Item it : found) {
                 JSONArray files = new JSONArray();
-                for (String[] f : it.files) files.put(new JSONObject().put("name", f[0]).put("url", f[1]));
+                for (String[] f : it.files) {
+            JSONObject o = new JSONObject().put("name", f[0]).put("url", f[1]);
+            if (f.length > 3 && !f[3].isEmpty()) o.put("sha256", f[3]);
+            files.put(o);
+        }
                 games.put(new JSONObject().put("name", it.name).put("author", it.author).put("developer", it.developer)
                         .put("description", it.description).put("licence", it.licence).put("version", it.version)
                         .put("repo", it.repo).put("files", files));
@@ -441,11 +445,12 @@ public class CatalogueActivity extends Page {
             for (int k = 0; k < files.length() && ok; k++) {
                 JSONObject f = files.getJSONObject(k);
                 String name = Files.safeName(f.getString("name")), url = f.optString("url", ""),
-                        asset = f.optString("asset", "");
+                        asset = f.optString("asset", ""), sha = f.optString("sha256", "").toLowerCase(java.util.Locale.ROOT);
+                if (!sha.isEmpty() && !sha.matches("[0-9a-f]{64}")) ok = false;     /* a malformed pin refuses the entry */
                 boolean fromApk = !asset.isEmpty() && url.isEmpty() && asset.startsWith("catalogue-games/")
                         && !asset.contains("..") && !asset.contains("\\");
                 if (name == null || !(fromApk || (asset.isEmpty() && url.startsWith("https://")))) ok = false;
-                else it.files.add(new String[] { name, url, asset });
+                else it.files.add(new String[] { name, url, asset, sha });
             }
             if (ok) out.add(it);
         }
@@ -1029,7 +1034,8 @@ public class CatalogueActivity extends Page {
     }
 
     /** Opens a file's address; a game file the release names differently (MysticBalloon-1.4.1.chgame) is looked up in its asset list. */
-    private static HttpURLConnection openGame(String[] f) throws IOException {
+    private static HttpURLConnection openGame(String[] f, String[] used) throws IOException {
+        used[0] = f[1];
         try {
             return open(f[1]);
         } catch (IOException first) {
@@ -1040,7 +1046,8 @@ public class CatalogueActivity extends Page {
             String asset = Updates.findAsset(m.group(1), Uri.decode(m.group(2)));
             if (asset == null || asset.equals(m.group(3))) throw first;
             if (!Uri.decode(asset).toLowerCase().startsWith(Saves.base(f[0]).toLowerCase())) throw first;   /* never another game's file */
-            return open("https://github.com/" + m.group(1) + "/releases/download/" + m.group(2) + "/" + asset);
+            used[0] = "https://github.com/" + m.group(1) + "/releases/download/" + m.group(2) + "/" + asset;
+            return open(used[0]);
         }
     }
 
@@ -1055,7 +1062,9 @@ public class CatalogueActivity extends Page {
             if (present(it, f) && !replace) continue;
             n++;
             final String label = it.name + (all > 1 ? " (file " + n + " of " + all + ")" : "");
-            HttpURLConnection c = f[2].isEmpty() ? openGame(f) : null;
+            String[] used = { f[1] };
+            HttpURLConnection c = f[2].isEmpty() ? openGame(f, used) : null;
+            java.security.MessageDigest sum = Pins.sha();
             Uri doc = null;
             boolean done = false;
             try (InputStream in = c != null ? c.getInputStream() : getAssets().open(f[2])) {
@@ -1077,6 +1086,7 @@ public class CatalogueActivity extends Page {
                         }
                         got += r;
                         if (got > (replace ? 16 << 20 : Files.MAX_FILE)) throw new IOException("file too big");
+                        sum.update(buf, 0, r);
                         if (pkg != null) pkg.write(buf, 0, r); else out.write(buf, 0, r);
                         long now = System.currentTimeMillis();
                         if (now - shown > 250) {
@@ -1086,6 +1096,11 @@ public class CatalogueActivity extends Page {
                             runOnUiThread(() -> say(line));
                         }
                     }
+                }
+                if (c != null) {        /* a download is kept only if its checksum holds (else the finally removes it) */
+                    String pin = f.length > 3 && used[0].equals(f[1]) ? f[3] : null;
+                    String why = Pins.check(this, used[0], pin, Pins.hex(sum.digest()));
+                    if (why != null) throw new IOException(why);
                 }
                 if (pkg != null) {
                     byte[] chg = ChgPackage.toChg(pkg.toByteArray(), ChgPackage.coverFor(this, replace ? overDoc : null, f[0]));
