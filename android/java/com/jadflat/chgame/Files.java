@@ -94,7 +94,7 @@ final class Files {
         File sd = sdFolder(ctx);
         Map<String, Long> stamps = new HashMap<>();
         for (Entry e : list(cr, tree)) {
-            if (isGame(e.path) || isSave(e.path) || e.path.startsWith("screenshots/") || e.size > MAX_FILE) continue;
+            if (isGame(e.path) || isSave(e.path) || e.path.startsWith("screenshots/") || e.path.startsWith(Saves.BACKUP + "/") || e.size > MAX_FILE) continue;
             try {
                 File f = inside(sd, e.path);
                 /* a .DAT is the game's data, never written by the game: it is current only if it is the very file
@@ -174,6 +174,18 @@ final class Files {
         } catch (Exception ignored) { }
     }
 
+    /** May a file the game left in the SD folder be written to the picked folder? Never a game or a save; a file
+        that was imported (so the game may have changed it); a new top-level file; never a file that exists but was not imported. */
+    static boolean mayExport(String rel, boolean imported, boolean exists) {
+        if (rel == null) return false;
+        String leaf = rel.substring(rel.lastIndexOf('/') + 1);
+        if (isGame(leaf) || isSave(leaf)) return false;
+        if (rel.startsWith(Saves.BACKUP + "/")) return false;
+        if (imported) return true;
+        if (exists) return false;
+        return !rel.contains("/") && safeName(rel) != null;
+    }
+
     /** Files the game changed or made in the SD folder, back into the picked folder. */
     static void exportCard(Context ctx, Uri tree, Map<String, Long> stamps) throws IOException {
         ContentResolver cr = ctx.getContentResolver();
@@ -187,8 +199,8 @@ final class Files {
             Long was = stamps.get(rel);
             if (was != null && f.lastModified() == was) continue;
             Uri target = existing.get(rel);
+            if (!mayExport(rel, was != null, target != null)) continue;
             if (target == null) {
-                if (rel.contains("/")) continue;    /* new files only at the top level */
                 target = DocumentsContract.createDocument(cr,
                         DocumentsContract.buildDocumentUriUsingTree(tree, DocumentsContract.getTreeDocumentId(tree)),
                         "application/octet-stream", rel);
@@ -228,8 +240,23 @@ final class Files {
         File dir = new File(ctx.getFilesDir(), "games");
         dir.mkdirs();
         File f = inside(dir, safe);
-        try (InputStream in = ctx.getContentResolver().openInputStream(uri); OutputStream out = new FileOutputStream(f)) {
+        File tmp = inside(dir, safe + ".tmp");
+        try (InputStream in = ctx.getContentResolver().openInputStream(uri); OutputStream out = new FileOutputStream(tmp)) {
             copy(in, out);
+        } catch (IOException | RuntimeException e) {
+            tmp.delete();
+            throw e;
+        }
+        byte[] head = new byte[4];
+        try (InputStream in = new FileInputStream(tmp)) {
+            if (readUpTo(in, head) != 4 || head[0] != 'C' || head[1] != 'H' || head[2] != 'G' || head[3] != '1') {
+                tmp.delete();
+                throw new IOException("not a CHGame game: " + name);
+            }
+        }
+        if (!tmp.renameTo(f)) {
+            f.delete();
+            if (!tmp.renameTo(f)) { tmp.delete(); throw new IOException("cannot save " + name); }
         }
         return f;
     }

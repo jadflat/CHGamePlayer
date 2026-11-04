@@ -30,7 +30,7 @@
 #include "audio.h"
 #include "sdcard.h"
 
-#define CORE_VERSION    "0.6"
+#define CORE_VERSION    "0.7"
 #define AUDIO_RATE      48000
 #define FPS             60
 #define FRAME_CYCLES    (CHG_HCLK / FPS)
@@ -734,6 +734,7 @@ RETRO_API void retro_run(void)
     for (int i = 0; i < n; i++) {
         float x = samples[i];
         x = sound_x(x);
+        if (!(x == x)) x = 0.0f;        /* a NaN would be undefined as an int16 */
         float v = x * 32767.0f;
         v = v > 32767.0f ? 32767.0f : v < -32768.0f ? -32768.0f : v;
         stereo[2 * i] = stereo[2 * i + 1] = (int16_t)v;
@@ -801,6 +802,28 @@ RETRO_API bool retro_serialize(void *data, size_t size)
     return true;
 }
 
+/* A state file is not trusted: the machine is copied over wholesale, so every
+   field that indexes an array or bounds a loop is checked first. The decoded
+   instruction caches are only caches and are dropped, never believed. */
+static bool state_ok(const ChgMachine *sm, const ChgAudio *sa)
+{
+    const ChgCpu *c = &sm->cpu;
+    if (c->trap_depth < 0 || c->trap_depth > CHG_HPE_DEPTH) return false;
+    for (int i = 0; i < CHG_HPE_DEPTH; i++)
+        if (c->trap_irq[i] < -1 || c->trap_irq[i] > 63) return false;
+    if (c->div_rd > 32) return false;
+    const ChgSdSpi *d = &sm->sdspi;
+    if (d->ncmd < 0 || d->ncmd > 5 || d->nout < 0 || d->nout > 600 || d->pout < 0 || d->pout > d->nout) return false;
+    if (d->wstate < 0 || d->wstate > 2 || d->nblk < 0 || d->nblk > 514) return false;
+    if (d->wstate == 2 && d->nblk > 513) return false;      /* 514 is legal after a finished block only */
+    /* nparam counts on past param[] (writes are guarded there), so only its sign matters */
+    if (sm->lcd.nparam < 0 || sm->lcd.nparam > (1 << 24) || sm->lcd.npix < 0 || sm->lcd.npix > 2) return false;
+    if (sm->buzzer.head >= CHG_BUZZ_LOG || sm->buzzer.tail >= CHG_BUZZ_LOG) return false;
+    if (sm->serial_len < 0 || sm->serial_len > 255) return false;
+    if (sa->fir_pos < 0 || sa->fir_pos >= chg_piezo_taps) return false;
+    return true;
+}
+
 RETRO_API bool retro_unserialize(const void *data, size_t size)
 {
     const State *s = (const State *)data;
@@ -823,9 +846,19 @@ RETRO_API bool retro_unserialize(const void *data, size_t size)
         core_log(RETRO_LOG_WARN, "state is from another build of this game: not loaded");
         return false;
     }
+    if (!state_ok(sm, sa)) {
+        core_log(RETRO_LOG_WARN, "state is damaged: not loaded");
+        return false;
+    }
     struct SdCard *sd = m.sd;
+    if (sd && layout && layout->card_size && !sdcard_layout_valid(sd, layout)) {
+        core_log(RETRO_LOG_WARN, "state is damaged (card layout): not loaded");
+        return false;
+    }
     const float volume = audio.volume;
     const bool piezo = audio.piezo;
+    const int rate = audio.rate;
+    const double cps = audio.cycles_per_sample;
     /* the card first, then the machine: it may be reading mid-block */
     if (sd && layout && layout->card_size) {
         if (!sdcard_layout_apply(sd, layout))
@@ -834,6 +867,12 @@ RETRO_API bool retro_unserialize(const void *data, size_t size)
     memcpy(&m, sm, sizeof m);
     memcpy(&audio, sa, sizeof audio);
     m.sd = sd;
+    /* the decoded instruction caches are only caches: a file's copy is never trusted
+       (its ops index a jump table); zeroed entries are decoded again on use */
+    memset(m.dc_flash, 0, sizeof m.dc_flash);
+    memset(m.dc_ram, 0, sizeof m.dc_ram);
+    audio.rate = rate;
+    audio.cycles_per_sample = cps;
 #ifdef CHG_JIT
     jit_machine_replaced(&m);
 #endif

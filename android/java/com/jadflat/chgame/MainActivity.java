@@ -53,7 +53,7 @@ import java.util.concurrent.Executors;
  * Options, where everything else lives.
  */
 public class MainActivity extends Activity {
-    static final String VERSION = "1.62";
+    static final String VERSION = "1.63";
     static final String PREFS = "chgame";
 
     private SharedPreferences prefs;
@@ -1443,6 +1443,8 @@ public class MainActivity extends Activity {
 
     /** Downloads the game (a .CHG or a .chgame package), runs it for 5 s and keeps that frame as its picture (cached as a PNG). */
     private Bitmap generatedPic(JSONObject n, String repo) {
+        /* a game that is not installed and not bundled is never run: third-party code only runs once the user has installed it */
+        if (n.optString("local").isEmpty()) return null;
         java.io.File shot = new java.io.File(getCacheDir(), "newshot-" + repo.replace('/', '_') + ".png");
         if (shot.exists()) return shot.length() == 0 ? null : android.graphics.BitmapFactory.decodeFile(shot.getPath());      /* empty: this game never drew */
         java.io.File game = new java.io.File(getCacheDir(), "newgame.chg");

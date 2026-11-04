@@ -35,6 +35,7 @@ void chg_audio_init(ChgAudio *a, int rate, uint64_t now)
 static inline double pwm_cum(const ChgBuzzState *s, double t)
 {
     const double P = s->period, H = s->high, d = t - (double)s->origin;
+    if (!(P > 0.0)) return 0.0;
     const double k = floor(d / P);
     return k * H + fmin(d - P * k, H);
 }

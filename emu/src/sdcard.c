@@ -214,7 +214,7 @@ static uint32_t *fat(Build *b) { return (uint32_t *)(b->mem + b->g.fat_lba * SEC
 static uint32_t alloc_chain(Build *b, uint32_t n)
 {
     if (!n) return 0;
-    if (b->next + n > b->g.nclus + 2) { b->full = true; return 0; }
+    if ((uint64_t)b->next + n > (uint64_t)b->g.nclus + 2) { b->full = true; return 0; }
     const uint32_t first = b->next;
     uint32_t *t = fat(b);
     for (uint32_t i = 0; i < n; i++) t[first + i] = i + 1 < n ? first + i + 1 : EOC;
@@ -225,7 +225,7 @@ static uint32_t alloc_chain(Build *b, uint32_t n)
 /* n clusters starting at 'first' if they are all free; 0 if not */
 static uint32_t alloc_at(Build *b, uint32_t first, uint32_t n)
 {
-    if (!n || first < 2 || first + n > b->g.nclus + 2) return 0;
+    if (!n || first < 2 || (uint64_t)first + n > (uint64_t)b->g.nclus + 2) return 0;
     uint32_t *t = fat(b);
     for (uint32_t i = 0; i < n; i++)
         if (t[first + i]) return 0;
@@ -387,8 +387,8 @@ static uint32_t import_dir(Build *b, const char *path, const char *rel, uint32_t
         /* new things go after everything the hint places */
         if (b->hint)
             for (uint32_t i = 0; i < b->hint->n; i++) {
-                const uint32_t end = b->hint->e[i].start + b->hint->e[i].nclus;
-                if (end > b->next && end <= b->g.nclus + 2) b->next = end;
+                const uint64_t end = (uint64_t)b->hint->e[i].start + b->hint->e[i].nclus;
+                if (end > b->next && end <= (uint64_t)b->g.nclus + 2) b->next = (uint32_t)end;
             }
     } else {
         self = alloc_hinted(b, rel, nclus);
@@ -531,10 +531,23 @@ typedef struct {
     char         **seen;
     int            nseen, cap;
     SdLayout      *lay;         /* record where things are, writing nothing */
+    uint64_t       card;        /* the card's size: no file may add up to more */
+    uint64_t       bytes;       /* file bytes taken so far */
+    int            names;       /* directory entries taken so far */
+    bool           over;        /* a limit was hit: the walk is partial */
 } Walk;
+
+#define WALK_MAX_NAMES 65536
+
+/* a cluster number that lies inside the data area */
+static bool clus_ok(const Geo *g, uint32_t c)
+{
+    return c >= 2 && c < g->nclus + 2;
+}
 
 static uint32_t next_clus(const Walk *w, uint32_t c)
 {
+    if (!clus_ok(&w->g, c)) return 0;
     const uint32_t v = get32(w->mem + w->g.fat_lba * SECTOR + (uint64_t)c * 4) & 0x0FFFFFFFu;
     return v >= 2 && v < w->g.nclus + 2 ? v : 0;
 }
@@ -571,7 +584,7 @@ static bool write_if_changed(const char *path, const uint8_t *data, size_t n)
 
 static void export_dir(Walk *w, uint32_t clus, const char *host, const char *rel, int depth)
 {
-    if (depth > 32) return;
+    if (depth > 32 || w->over || !clus_ok(&w->g, clus)) return;
     const uint32_t cbytes = w->g.spc * SECTOR;
     uint16_t lfn[256];
     int lfn_parts = 0;
@@ -580,6 +593,7 @@ static void export_dir(Walk *w, uint32_t clus, const char *host, const char *rel
         const uint8_t *d = w->mem + clus_off(&w->g, c);
         for (uint32_t i = 0; i < cbytes; i += 32) {
             const uint8_t *e = d + i;
+            if (w->over) return;
             if (e[0] == 0) return;
             if (e[0] == 0xE5) { lfn_parts = 0; continue; }
             if (e[11] == 0x0F) {
@@ -614,14 +628,19 @@ static void export_dir(Walk *w, uint32_t clus, const char *host, const char *rel
             lfn_parts = 0;
             if (!strcmp(name, ".") || !strcmp(name, "..") || !name[0]) continue;
             if (strchr(name, '/') || strchr(name, '\\')) continue;
+            bool bad = false;
+            for (const char *q = name; *q; q++) bad |= (unsigned char)*q < 32 || *q == 127;
+            if (bad) continue;
+            if (++w->names > WALK_MAX_NAMES) { w->over = true; return; }
 
+            /* a path too long for the buffers is skipped, never cut into another name */
             char hpath[2048], rpath[2048];
-            snprintf(hpath, sizeof hpath, "%s/%s", host, name);
-            snprintf(rpath, sizeof rpath, "%s%s%s", rel, *rel ? "/" : "", name);
+            if (snprintf(hpath, sizeof hpath, "%s/%s", host, name) >= (int)sizeof hpath) continue;
+            if (snprintf(rpath, sizeof rpath, "%s%s%s", rel, *rel ? "/" : "", name) >= (int)sizeof rpath) continue;
             const uint32_t first = (uint32_t)get16(e + 20) << 16 | get16(e + 26);
             if (w->lay) {
                 SdLayout *l = w->lay;
-                if (l->n < SDLAYOUT_MAX && strlen(rpath) < SDLAYOUT_PATH && first >= 2) {
+                if (l->n < SDLAYOUT_MAX && strlen(rpath) < SDLAYOUT_PATH && clus_ok(&w->g, first)) {
                     SdLayoutEntry *x = &l->e[l->n++];
                     snprintf(x->path, sizeof x->path, "%s", rpath);
                     x->start = first;
@@ -630,19 +649,22 @@ static void export_dir(Walk *w, uint32_t clus, const char *host, const char *rel
                 } else {
                     l->overflow++;
                 }
-                if ((e[11] & 0x10) && first >= 2) export_dir(w, first, hpath, rpath, depth + 1);
+                if ((e[11] & 0x10) && clus_ok(&w->g, first)) export_dir(w, first, hpath, rpath, depth + 1);
                 continue;
             }
             if (e[11] & 0x10) {
+                if (!clus_ok(&w->g, first)) continue;
                 make_dir(hpath);
-                if (first >= 2) export_dir(w, first, hpath, rpath, depth + 1);
+                export_dir(w, first, hpath, rpath, depth + 1);
                 continue;
             }
             const uint32_t size = get32(e + 28);
+            if (size > w->card || w->bytes + size > w->card) { w->over = true; return; }
+            w->bytes += size;
             uint8_t *data = malloc(size ? size : 1);
             if (!data) continue;
             uint32_t at = 0;
-            for (uint32_t fc = first, g2 = 0; fc >= 2 && at < size && g2 < w->g.nclus; fc = next_clus(w, fc), g2++) {
+            for (uint32_t fc = first, g2 = 0; clus_ok(&w->g, fc) && at < size && g2 < w->g.nclus; fc = next_clus(w, fc), g2++) {
                 const uint32_t k = size - at < cbytes ? size - at : cbytes;
                 memcpy(data + at, w->mem + clus_off(&w->g, fc), k);
                 at += k;
@@ -656,20 +678,47 @@ static void export_dir(Walk *w, uint32_t clus, const char *host, const char *rel
     }
 }
 
-static bool sync_folder(SdCard *c)
+/* The partition's geometry from the boot sector. The program can write that
+   sector, so nothing in it is trusted: every field is checked against the
+   card before any cluster is read. A valid reformat by the guest still passes. */
+static bool walk_init(SdCard *c, Walk *w)
 {
-    Walk w = { c->mem, { 0 }, NULL, 0, 0 };
-    /* the partition the card was made with */
+    memset(w, 0, sizeof *w);
+    w->mem = c->mem;
+    w->card = c->size;
+    const uint64_t csec = c->size / SECTOR;
+    if (csec <= PART_LBA + RSV) return false;
     const uint8_t *bs = c->mem + PART_LBA * SECTOR;
     if (get16(bs + 510) != 0xAA55 || get16(bs + 11) != SECTOR) return false;
-    w.g.spc = bs[13];
-    w.g.fatsz = get32(bs + 36);
-    w.g.fat_lba = PART_LBA + get16(bs + 14);
-    w.g.data_lba = w.g.fat_lba + (uint64_t)bs[16] * w.g.fatsz;
-    w.g.sectors = get32(bs + 32);
-    if (!w.g.spc || w.g.data_lba >= PART_LBA + (uint64_t)w.g.sectors) return false;
-    w.g.nclus = (uint32_t)((PART_LBA + (uint64_t)w.g.sectors - w.g.data_lba) / w.g.spc);
-    export_dir(&w, get32(bs + 44), c->folder, "", 0);
+    const uint32_t spc = bs[13], rsv = get16(bs + 14), fats = bs[16];
+    const uint32_t fatsz = get32(bs + 36), sectors = get32(bs + 32);
+    if (!spc || (spc & (spc - 1)) || spc > 128 || rsv < 1 || fats < 1 || fats > 2 || !fatsz || !sectors) return false;
+    if (PART_LBA + (uint64_t)sectors > csec) return false;
+    const uint64_t fat_lba = PART_LBA + (uint64_t)rsv;
+    const uint64_t data_lba = fat_lba + (uint64_t)fats * fatsz;
+    if (data_lba >= PART_LBA + (uint64_t)sectors) return false;
+    const uint64_t nclus = (PART_LBA + (uint64_t)sectors - data_lba) / spc;
+    if (!nclus || nclus > 0x0FFFFFF0u || (nclus + 2) * 4 > (uint64_t)fatsz * SECTOR) return false;
+    w->g.spc = spc;
+    w->g.fatsz = fatsz;
+    w->g.sectors = sectors;
+    w->g.fat_lba = fat_lba;
+    w->g.data_lba = data_lba;
+    w->g.nclus = (uint32_t)nclus;
+    return clus_ok(&w->g, get32(bs + 44) & 0x0FFFFFFFu);
+}
+
+static bool sync_folder(SdCard *c)
+{
+    Walk w;
+    if (!walk_init(c, &w)) return false;
+    export_dir(&w, get32(c->mem + PART_LBA * SECTOR + 44) & 0x0FFFFFFFu, c->folder, "", 0);
+    if (w.over) {
+        /* a partial walk must not look like the program deleted files */
+        for (int i = 0; i < w.nseen; i++) free(w.seen[i]);
+        free(w.seen);
+        return false;
+    }
 
     /* files the program deleted go from the folder too */
     for (int i = 0; i < c->nfiles; i++) {
@@ -677,8 +726,7 @@ static bool sync_folder(SdCard *c)
         for (int j = 0; j < w.nseen && !still; j++) still = !strcmp(c->files[i], w.seen[j]);
         if (!still) {
             char hpath[2048];
-            snprintf(hpath, sizeof hpath, "%s/%s", c->folder, c->files[i]);
-            remove(hpath);
+            if (snprintf(hpath, sizeof hpath, "%s/%s", c->folder, c->files[i]) < (int)sizeof hpath) remove(hpath);
         }
         free(c->files[i]);
     }
@@ -690,33 +738,29 @@ static bool sync_folder(SdCard *c)
 
 /* ------------------------------------------------------------------------ */
 
-static bool walk_init(SdCard *c, Walk *w)
-{
-    const uint8_t *bs = c->mem + PART_LBA * SECTOR;
-    if (get16(bs + 510) != 0xAA55 || get16(bs + 11) != SECTOR) return false;
-    w->g.spc = bs[13];
-    w->g.fatsz = get32(bs + 36);
-    w->g.fat_lba = PART_LBA + get16(bs + 14);
-    w->g.data_lba = w->g.fat_lba + (uint64_t)bs[16] * w->g.fatsz;
-    w->g.sectors = get32(bs + 32);
-    if (!w->g.spc || w->g.data_lba >= PART_LBA + (uint64_t)w->g.sectors) return false;
-    w->g.nclus = (uint32_t)((PART_LBA + (uint64_t)w->g.sectors - w->g.data_lba) / w->g.spc);
-    return true;
-}
-
 bool sdcard_layout_get(SdCard *c, SdLayout *out)
 {
     memset(out, 0, sizeof *out);
     if (!c || !c->mem) return false;
-    Walk w = { c->mem, { 0 }, NULL, 0, 0, out };
+    Walk w;
     if (!walk_init(c, &w)) return false;
-    const uint32_t root = get32(c->mem + PART_LBA * SECTOR + 44);
+    w.lay = out;
+    const uint32_t root = get32(c->mem + PART_LBA * SECTOR + 44) & 0x0FFFFFFFu;
     SdLayoutEntry *x = &out->e[out->n++];
     x->path[0] = 0;
     x->start = root;
     for (uint32_t fc = root; fc && x->nclus < w.g.nclus; fc = next_clus(&w, fc)) x->nclus++;
     export_dir(&w, root, "", "", 0);
     out->card_size = c->size;
+    return true;
+}
+
+bool sdcard_layout_valid(const SdCard *c, const SdLayout *l)
+{
+    if (!l || l->n < 1 || l->n > SDLAYOUT_MAX || !l->card_size || (l->card_size & (SECTOR - 1))) return false;
+    if (l->card_size > (4ull << 30) && !(c && l->card_size == c->size)) return false;
+    for (uint32_t i = 0; i < l->n; i++)
+        if (!memchr(l->e[i].path, 0, sizeof l->e[i].path)) return false;
     return true;
 }
 
@@ -730,7 +774,7 @@ static bool layout_same(const SdLayout *a, const SdLayout *b)
 
 bool sdcard_layout_apply(SdCard *c, const SdLayout *l)
 {
-    if (!c || !c->mem || !l || !l->card_size || !l->n) return false;
+    if (!c || !c->mem || !sdcard_layout_valid(c, l)) return false;
     SdLayout now;
     if (sdcard_layout_get(c, &now) && layout_same(&now, l)) return true;
     sdcard_sync(c);                     /* what the program wrote goes into the folder first */
@@ -801,16 +845,18 @@ uint64_t sdcard_sectors(const SdCard *c) { return c->size / SECTOR; }
 
 bool sdcard_read(SdCard *c, uint64_t lba, uint8_t *buf, uint32_t count)
 {
+    const uint64_t total = c->size / SECTOR;
+    if (lba > total || count > total - lba) return false;
     const uint64_t off = lba * SECTOR, n = (uint64_t)count * SECTOR;
-    if (off + n > c->size) return false;
     if (c->mem) { memcpy(buf, c->mem + off, (size_t)n); return true; }
     return fseek64(c->f, (long long)off, SEEK_SET) == 0 && fread(buf, 1, (size_t)n, c->f) == n;
 }
 
 bool sdcard_write(SdCard *c, uint64_t lba, const uint8_t *buf, uint32_t count)
 {
+    const uint64_t total = c->size / SECTOR;
+    if (lba > total || count > total - lba) return false;
     const uint64_t off = lba * SECTOR, n = (uint64_t)count * SECTOR;
-    if (off + n > c->size) return false;
     c->dirty = true;
     if (c->mem) { memcpy(c->mem + off, buf, (size_t)n); return true; }
     return fseek64(c->f, (long long)off, SEEK_SET) == 0 && fwrite(buf, 1, (size_t)n, c->f) == n;

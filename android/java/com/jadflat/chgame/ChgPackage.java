@@ -31,7 +31,7 @@ final class ChgPackage {
     static byte[] pictureOf(byte[] d) {
         if (d == null || d.length < 512 + 4) return null;
         int at = le(d, 0x60), size = le(d, 0x64);
-        if (at <= 0 || size != Cart.PICTURE || at % 512 != 0 || at + size > d.length) return null;
+        if (at <= 0 || size != Cart.PICTURE || at % 512 != 0 || at > d.length - size) return null;
         if (d[at] != 'C' || d[at + 1] != 'H' || d[at + 2] != 'B' || d[at + 3] != '1') return null;
         return java.util.Arrays.copyOfRange(d, at, at + size);
     }

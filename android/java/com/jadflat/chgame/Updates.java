@@ -260,9 +260,9 @@ final class Updates {
     /** The file a new game is saved as: the release's .CHG, or the repo's name when it ships a package. */
     static String newFile(JSONObject n) {
         String asset = n.optString("asset", "");
-        if (asset.toLowerCase(Locale.ROOT).endsWith(".chg")) return asset;
+        if (asset.toLowerCase(Locale.ROOT).endsWith(".chg") && Files.safeName(asset) != null) return asset;
         String base = n.optString("repo", "game");
-        base = base.substring(base.indexOf('/') + 1).replaceAll("[^\\w.-]", "");
+        base = base.substring(base.indexOf('/') + 1).replaceAll("[^\\w.-]", "").replaceFirst("^[.]+", "");
         return (base.isEmpty() ? "game" : base) + ".CHG";
     }
 
@@ -382,6 +382,7 @@ final class Updates {
         for (int k = 0; assets != null && k < assets.length(); k++) {
             JSONObject a = assets.getJSONObject(k);
             String an = a.optString("name", "");
+            if (Files.safeName(an) == null) continue;       /* a name with a path in it is never used */
             if (Files.isGame(an)) { asset = an; break; }
             /* one game is about 30 KB; a far bigger package is a bundle of many, not one game */
             if (pkg == null && an.toLowerCase(Locale.ROOT).endsWith(".chgame") && a.optLong("size", 0) > 0 && a.optLong("size", 0) <= 300000
@@ -393,6 +394,7 @@ final class Updates {
         if (asset == null && pkg != null) {
             String base = r.optString("name", "game").replaceAll("[^\\w.-]", "");
             asset = (base.isEmpty() ? "game" : base) + ".CHG";
+            if (Files.safeName(asset) == null) asset = "game.CHG";
             url = pkgUrl;
         }
         if (asset == null) return null;
@@ -1341,6 +1343,7 @@ final class Updates {
             for (int i = 0; i < files.length(); i++) {
                 JSONObject f = files.getJSONObject(i);
                 String name = f.optString("name"), asset = f.optString("asset");
+                if (Files.safeName(name) == null) continue;      /* a name from a list is a plain file name or nothing */
                 if (asset.isEmpty() || (have.contains(name.toUpperCase(Locale.ROOT)) && !name.equalsIgnoreCase(mainFile))) continue;
                 Uri doc = existing(cr, tree, name);       /* the main file is rewritten in place, not copied as "(1)" */
                 boolean fresh = doc == null;
@@ -1439,6 +1442,8 @@ final class Updates {
                     android.provider.DocumentsContract.getTreeDocumentId(tree));
             String file = newFile(n);
             Uri doc = existing(cr, tree, file);
+            /* a file of that name is another game's (or the user's): a download never replaces it */
+            if (doc != null && !repo.equalsIgnoreCase(repoFor(c, prefs, file))) return file + " is already in the games folder";
             boolean fresh = doc == null;
             if (fresh) doc = android.provider.DocumentsContract.createDocument(cr, root, "application/octet-stream", file);
             if (doc == null) return "cannot write to the games folder";
@@ -1613,6 +1618,7 @@ final class Updates {
 
     /** One card file: true if it is now current (or there is nothing to get it from while one is there). */
     private static boolean syncOne(Context c, ContentResolver cr, Uri tree, String repo, String tag, String name, String asset, boolean replace) throws IOException {
+        if (Files.safeName(name) == null) return false;
         Uri doc = existing(cr, tree, name);
         if (doc != null && !replace) return true;       /* never touch a file we cannot prove is an old copy (saves, hand-installed games) */
         HttpURLConnection h = null;

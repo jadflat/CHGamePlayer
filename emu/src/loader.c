@@ -34,7 +34,7 @@ static uint8_t *read_file(const char *path, size_t *size)
     fseek(f, 0, SEEK_END);
     long n = ftell(f);
     fseek(f, 0, SEEK_SET);
-    if (n < 0) { fclose(f); return NULL; }
+    if (n < 0 || n > (256l << 20)) { fclose(f); return NULL; }   /* nothing here is over 256 MB */
     uint8_t *buf = malloc((size_t)n + 1);
     if (!buf) { fclose(f); return NULL; }
     if (fread(buf, 1, (size_t)n, f) != (size_t)n) { free(buf); fclose(f); return NULL; }
@@ -56,7 +56,7 @@ static bool ends_with(const char *s, const char *ext)
 static bool place(ChgMachine *m, uint32_t addr, const uint8_t *data, size_t len, char *err, size_t errlen)
 {
     addr &= 0x00ffffffu;    /* the 0x08000000 alias is the same flash */
-    if (addr + len > CHG_FLASH_USER) {
+    if ((uint64_t)addr + len > CHG_FLASH_USER) {
         snprintf(err, errlen, "%u bytes at 0x%X do not fit the 62 KB of flash", (unsigned)len, (unsigned)addr);
         return false;
     }
@@ -122,13 +122,15 @@ static bool load_elf(ChgMachine *m, const uint8_t *f, size_t size, uint32_t *low
     const uint32_t phoff = rd32(f + 28);
     const uint16_t phentsize = rd16(f + 42), phnum = rd16(f + 44);
     *lowest = 0xffffffffu;
+    if (phnum && phentsize < 32) { snprintf(err, errlen, "the ELF's program header size is wrong"); return false; }
     for (unsigned i = 0; i < phnum; i++) {
-        const uint8_t *ph = f + phoff + i * phentsize;
-        if (ph + 32 > f + size) break;
+        const uint64_t at = (uint64_t)phoff + (uint64_t)i * phentsize;     /* 64 bits: cannot wrap */
+        if (at + 32 > size) break;
+        const uint8_t *ph = f + at;
         if (rd32(ph) != 1) continue;               /* PT_LOAD */
         const uint32_t off = rd32(ph + 4), paddr = rd32(ph + 12), filesz = rd32(ph + 16);
         if (!filesz) continue;
-        if (off + filesz > size) { snprintf(err, errlen, "the ELF is cut short"); return false; }
+        if ((uint64_t)off + filesz > size) { snprintf(err, errlen, "the ELF is cut short"); return false; }
         const uint32_t a = paddr & 0x00ffffffu;
         if (paddr >= CHG_RAM_BASE && paddr < CHG_RAM_BASE + CHG_RAM_SIZE) continue;
         if (!place(m, a, f + off, filesz, err, errlen)) return false;
@@ -322,7 +324,7 @@ bool chg_load_save(ChgMachine *m, const char *path)
     if (!data) return false;
     for (size_t o = 0; o + 4 + CHG_PAGE_SIZE <= size; o += 4 + CHG_PAGE_SIZE) {
         const uint32_t addr = rd32(data + o);
-        if (addr % CHG_PAGE_SIZE || addr + CHG_PAGE_SIZE > CHG_FLASH_USER) continue;
+        if (addr % CHG_PAGE_SIZE || addr > CHG_FLASH_USER - CHG_PAGE_SIZE) continue;
         memcpy(m->flash + addr, data + o + 4, CHG_PAGE_SIZE);
         m->flash_dirty[addr / CHG_PAGE_SIZE] = 1;
     }

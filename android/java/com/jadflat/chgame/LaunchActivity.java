@@ -34,11 +34,47 @@ public class LaunchActivity extends Activity {
         super.onCreate(saved);
         Intent in = getIntent();
         Uri uri = in == null ? null : in.getData();
+        if (uri == null || !"content".equals(uri.getScheme())) {
+            Toast.makeText(this, "No game was given.", Toast.LENGTH_LONG).show();
+            finish();
+            return;
+        }
+        /* Ask once per calling app before anything is copied or run. The referrer is what the caller says it is and
+           can be spoofed: this stops accidents and casual misuse (a stray link, an app that was not meant to start
+           games), not a determined app. With no referrer there is nothing to remember, so it asks every time. */
+        String who = referrer();
+        if (who != null && (who.equals(getPackageName()) || getSharedPreferences(MainActivity.PREFS, MODE_PRIVATE).getBoolean(ALLOW + who, false))) {
+            go(uri);
+            return;
+        }
+        new CardDialog.Builder(this)
+                .setTitle("Start a game?")
+                .setMessage((who == null ? "An app" : who) + " wants to start a game in CHGame Player.")
+                .setPositiveButton("Allow", (d, w) -> {
+                    if (who != null) getSharedPreferences(MainActivity.PREFS, MODE_PRIVATE).edit().putBoolean(ALLOW + who, true).apply();
+                    go(uri);
+                })
+                .setNegativeButton("Cancel", (d, w) -> finish())
+                .setOnCancelListener(d -> finish())
+                .show();
+    }
+
+    private static final String ALLOW = "launch-ok:";
+
+    /** The package that started this activity, or null when it did not say. */
+    private String referrer() {
+        try {
+            Uri r = getReferrer();
+            return r != null && "android-app".equals(r.getScheme()) && r.getHost() != null && !r.getHost().isEmpty() ? r.getHost() : null;
+        } catch (RuntimeException e) {
+            return null;
+        }
+    }
+
+    private void go(Uri uri) {
         String err = null;
         File game = null;
-        if (uri == null || !"content".equals(uri.getScheme())) {
-            err = "No game was given.";
-        } else {
+        {
             try {
                 String name = displayName(uri);
                 game = Files.copyGame(this, uri, name);

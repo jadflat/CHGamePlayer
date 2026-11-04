@@ -65,7 +65,7 @@ static void pfic_write(ChgMachine *m, uint32_t off, uint32_t v, int size)
 {
     ChgPfic *p = &m->pfic;
     if (off >= 0x400 && off < 0x500) {
-        for (int i = 0; i < size; i++)
+        for (int i = 0; i < size && off - 0x400 + (uint32_t)i < sizeof p->prio; i++)
             p->prio[off - 0x400 + i] = (uint8_t)(v >> (8 * i));
         chg_kick(m);
         return;
@@ -113,7 +113,7 @@ static uint64_t stk_div(ChgMachine *m) { return (m->systick.ctlr & STK_STCLK) ? 
 /* x % period, without the divide when x is close (a program reads the counter in a loop) */
 static inline uint64_t mod_near(uint64_t x, uint64_t period)
 {
-    if (x < period) return x;
+    if (period == 0 || x < period) return x;
     if (x - period < period) return x - period;
     return x % period;
 }
@@ -257,6 +257,7 @@ static bool af_level(ChgMachine *m, int port, int pin)
         const ChgBuzzState *b = &m->buzzer.cur;
         if (!b->pwm)
             return b->level;
+        if (!b->period) return b->level;
         const uint64_t ph = (m->cycles - b->origin) % b->period;
         return (ph < b->high) ? b->level : !b->level;
     }
@@ -628,7 +629,12 @@ static void dma_m2m(ChgMachine *m, int ch)
     ChgDmaChannel *c = &m->dma.ch[ch];
     const int psize = dma_size(c->cfgr, 8), msize = dma_size(c->cfgr, 10);
     int wait = 0;
-    while (c->cntr) {
+    /* runs the count it started with, once: a transfer that writes the DMA's own
+       registers cannot nest another or change how many words this one moves */
+    static bool busy;
+    if (busy) return;
+    busy = true;
+    for (uint32_t left = c->cntr; left; left--) {
         const uint32_t pa = c->paddr + ((c->cfgr & DMA_PINC) ? c->pos * (uint32_t)psize : 0);
         const uint32_t ma = c->maddr + ((c->cfgr & DMA_MINC) ? c->pos * (uint32_t)msize : 0);
         if (c->cfgr & DMA_DIR) {
@@ -639,8 +645,9 @@ static void dma_m2m(ChgMachine *m, int ch)
             bus_write_slow(m, ma, v, msize, &wait);
         }
         c->pos++;
-        c->cntr--;
     }
+    c->cntr = 0;
+    busy = false;
     dma_flag(m, ch, 2);
 }
 
@@ -846,8 +853,9 @@ void buzzer_update(ChgMachine *m)
             /* PWM mode 1: active while CNT < CCR; mode 2 the other way round */
             s.pwm = 1;
             s.level = (uint8_t)((mode == 6) != polarity);
-            s.period = period * tim_tick(t);
-            s.high = ccr * tim_tick(t);
+            const uint64_t per64 = (uint64_t)period * tim_tick(t), high64 = (uint64_t)ccr * tim_tick(t);
+            s.period = per64 > 0xFFFFFFFFu ? 0xFFFFFFFFu : (uint32_t)per64;
+            s.high = high64 > 0xFFFFFFFFu ? 0xFFFFFFFFu : (uint32_t)high64;
             s.origin = m->cycles - (uint64_t)cnt * tim_tick(t) - (m->cycles - t->cycle_base) % tim_tick(t);
         } else {
             bool active;
@@ -1218,10 +1226,16 @@ periph:
         }
         return;
     case 0x23400:
-        memcpy(m->usb + (off & 0x3ff) + (addr & 3), &value, (size_t)size);
+        {
+            const uint32_t at = (off & 0x3ff) + (addr & 3);
+            if (at < sizeof m->usb) memcpy(m->usb + at, &value, (size_t)size < sizeof m->usb - at ? (size_t)size : sizeof m->usb - at);
+        }
         return;
     default:
-        memcpy(m->io + off + (addr & 3), &value, (size_t)size);
+        {
+            const uint32_t at = off + (addr & 3);
+            if (at < sizeof m->io) memcpy(m->io + at, &value, (size_t)size < sizeof m->io - at ? (size_t)size : sizeof m->io - at);
+        }
         return;
     }
 }

@@ -305,7 +305,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     private void continueFrom(File f) {
         if (!Native.loadState(f.getPath())) {
             Saves.deleteState(f);       /* another build's, or damaged: it would be offered again */
-            toast("The resume point is from another version of the game; starting fresh");
+            toast("The resume point could not be loaded (another version, or damaged); starting fresh");
         }
     }
 

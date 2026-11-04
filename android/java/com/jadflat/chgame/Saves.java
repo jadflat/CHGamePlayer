@@ -29,7 +29,8 @@ import java.util.List;
 final class Saves {
     static final int SLOTS = 4;
     private static final long MAX_SAV = 64 << 10;     /* the whole user flash is 62 KB */
-    private static final String BACKUP = "CHGame saves";   /* in the games folder */
+    private static final long MAX_STATE = 8L << 20;
+    static final String BACKUP = "CHGame saves";   /* in the games folder */
 
     static String base(String gameFile) {
         int dot = gameFile.lastIndexOf('.');
@@ -212,7 +213,12 @@ final class Saves {
         try (InputStream in = cr.openInputStream(src); OutputStream out = new FileOutputStream(tmp)) {
             if (in == null) throw new IOException("cannot open");
             byte[] b = new byte[1 << 16];
-            for (int n; (n = in.read(b)) > 0; ) out.write(b, 0, n);
+            long total = 0;
+            for (int n; (n = in.read(b)) > 0; ) {
+                total += n;
+                if (total > MAX_STATE) throw new IOException("too big for a save or state");   /* sizeof(State) is far below this; the core re-checks the contents */
+                out.write(b, 0, n);
+            }
         } catch (Exception e) {
             tmp.delete();
             return false;

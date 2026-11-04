@@ -39,7 +39,7 @@ OBJS=""
 for s in $SRC; do
     o=$OUT/obj/$(basename "${s%.c}").o
     $ZIG cc -target aarch64-linux-musl -std=c11 -fPIC -O3 -fvisibility=hidden -ffunction-sections -fdata-sections \
-        -fno-stack-protector -D_GNU_SOURCE -Wall -Wno-unused-parameter -Iemu/src -Ilibretro -Iandroid/jni \
+        -fstack-protector-strong -D_GNU_SOURCE -Wall -Wno-unused-parameter -Iemu/src -Ilibretro -Iandroid/jni \
         -Iandroid/jni/include -I"$JAVA_HOME/include" '-DSDCARD_LABEL="CHGAME"' -c $s -o $o
     OBJS="$OBJS $o"
 done

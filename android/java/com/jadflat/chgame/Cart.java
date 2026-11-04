@@ -116,7 +116,7 @@ final class Cart {
     /** The record's "game" object (spec/chg.md, "The record"), or null when there is none or it fails its checks. */
     private static JSONObject record(byte[] d, int n) {
         int at = u32(d, 0x6C), size = u32(d, 0x70);
-        if (at <= 0 || size <= 0 || size > RECORD_MAX || at % 512 != 0 || at + size > n) return null;
+        if (at <= 0 || size <= 0 || size > RECORD_MAX || at % 512 != 0 || at > n - size) return null;
         CRC32 crc = new CRC32();
         crc.update(d, at, size);
         long want = (d[0x74] & 0xffL) | (d[0x75] & 0xffL) << 8 | (d[0x76] & 0xffL) << 16 | (d[0x77] & 0xffL) << 24;
@@ -131,7 +131,7 @@ final class Cart {
 
     private static Bitmap picture(byte[] d, int n) {
         int at = u32(d, 0x60), size = u32(d, 0x64);
-        if (at <= 0 || size != PICTURE || at % 512 != 0 || at >= PICTURE_MAX_OFFSET || at + PICTURE > n) return null;
+        if (at <= 0 || size != PICTURE || at % 512 != 0 || at >= PICTURE_MAX_OFFSET || at > n - PICTURE) return null;
         return decode(d, at);
     }
 

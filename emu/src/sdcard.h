@@ -38,6 +38,8 @@ typedef struct {
     SdLayoutEntry e[SDLAYOUT_MAX];
 } SdLayout;
 bool     sdcard_layout_get(SdCard *c, SdLayout *out);
+/* a layout is sane: 1..40 entries, NUL-terminated paths, a sector-aligned size, at most 4 GiB unless it is c's own */
+bool     sdcard_layout_valid(const SdCard *c, const SdLayout *l);
 /* true if the card now matches the layout (or already did) */
 bool     sdcard_layout_apply(SdCard *c, const SdLayout *l);
 
