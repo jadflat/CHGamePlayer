@@ -248,6 +248,8 @@ final class CardDialog extends Dialog {
         if (!customView && !stops.isEmpty()) {
             if (sel >= stops.size()) sel = 0;
             if (!hasItems) sel = startButton();
+            /* never start on a disabled stop: move to the next enabled one */
+            for (int n = 0; n < stops.size() && !stops.get(sel).isEnabled(); n++) sel = (sel + 1) % stops.size();
             mark();
         }
     }
