@@ -53,7 +53,7 @@ import java.util.concurrent.Executors;
  * Options, where everything else lives.
  */
 public class MainActivity extends Activity {
-    static final String VERSION = "1.65";
+    static final String VERSION = "1.67";
     static final String PREFS = "chgame";
 
     private SharedPreferences prefs;
@@ -1212,7 +1212,12 @@ public class MainActivity extends Activity {
 
     private boolean isPort(Files.Entry e) {
         Cart c = carts.get(e.uri);
-        return c != null && c.portedFrom != null;
+        boolean port = c != null && c.portedFrom != null;
+        return moved(e) != port;      /* a moved game sits in the other category */
+    }
+
+    private boolean moved(Files.Entry e) {
+        return prefs.getStringSet("catMoved", new java.util.HashSet<>()).contains(fileName(e));
     }
 
     /** The game a list row shows, or -1 for a section header. */
@@ -1733,7 +1738,8 @@ public class MainActivity extends Activity {
         select(pos, row);
         Files.Entry e = games.get(pos);
         startActivity(new Intent(this, GameSettingsActivity.class)
-                .putExtra("file", fileName(e)).putExtra("path", e.path).putExtra("title", displayTitle(e)));
+                .putExtra("file", fileName(e)).putExtra("path", e.path).putExtra("title", displayTitle(e))
+                .putExtra("port", isPort(e)));
     }
 
     /** What can be done with this game (the menu: long press is now the settings page). */

@@ -87,6 +87,16 @@ public class GameSettingsActivity extends Page {
                     android.widget.Toast.LENGTH_LONG).show();
             build();
         });
+        boolean port = getIntent().getBooleanExtra("port", false);
+        row("Move to " + (port ? "CHGame originals" : "Ports"), "Now in " + (port ? "Ports" : "CHGame originals")
+                + ". Moves the game to the other list section", () -> {
+            java.util.Set<String> set = new java.util.HashSet<>(prefs.getStringSet("catMoved", new java.util.HashSet<>()));
+            if (!set.remove(file)) set.add(file);
+            prefs.edit().putStringSet("catMoved", set).apply();
+            android.widget.Toast.makeText(this, title + " moved to " + (port ? "CHGame originals" : "Ports"),
+                    android.widget.Toast.LENGTH_LONG).show();
+            finish();
+        });
         String repo = Updates.repoFor(this, prefs, file);
         if (repo != null) row("Open on GitHub", "github.com/" + repo, () -> {
             try {
