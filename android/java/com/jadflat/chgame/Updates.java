@@ -46,16 +46,6 @@ final class Updates {
             }
         }
         add(out, prefs.getString("cat:found", "{\"games\":[]}"));
-        try {
-            HttpURLConnection h = CatalogueActivity.open(CatalogueActivity.REMOTE);
-            try (InputStream in = h.getInputStream()) {
-                add(out, CatalogueActivity.readAll(in, 1 << 20));
-            } finally {
-                h.disconnect();
-            }
-        } catch (Exception e) {
-            /* no network: the bundled list is used */
-        }
         return out;
     }
 
@@ -556,7 +546,7 @@ final class Updates {
     /** The app's own cap on API calls an hour: GitHub allows 60 for each network address, shared by every device on it. */
     static final int API_PER_HOUR = 25;
     /** Developers known to make CHGame games: their repo pages are read by every search (one page each, no API). */
-    static final String[] KNOWN_DEVS = { "bateske", "juliendorra", "poevoid", "SellswordSoftware", "joyrider3774" };
+    static final String[] KNOWN_DEVS = { "jadflat", "bateske", "juliendorra", "poevoid", "SellswordSoftware", "joyrider3774" };
 
     private static volatile SharedPreferences net;
     private static volatile java.io.File netCache;

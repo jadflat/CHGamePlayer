@@ -86,7 +86,8 @@ public class CatalogueActivity extends Page {
         loadFound();
         build();
         scanFolder();
-        refreshRemote();
+        /* no bundled or remote list of games: the first boot searches GitHub (also from Search GitHub, any time) */
+        if (getIntent().getBooleanExtra("autoSearch", false) && !prefs.getBoolean("cat:firstScan", false)) searchGitHub();
     }
 
     /** New games found by Refresh stay in the list (kept in the preferences, in the catalogue's own format). */
@@ -769,6 +770,7 @@ public class CatalogueActivity extends Page {
             for (String d : Updates.KNOWN_DEVS) extra.add(d.toLowerCase(Locale.ROOT));
             final Updates.Hunt h = Updates.hunt(this, known, extra, 60, 180_000L, line -> runOnUiThread(() -> say(line)));
             if (h.limited) rateLimited = true;
+            if (!h.limited && !h.sources.isEmpty()) prefs.edit().putBoolean("cat:firstScan", true).apply();
             final List<Item> fresh = new ArrayList<>();
             for (JSONObject[] g : h.games) {
                 Item it = newItem(g[0], g[1]);
