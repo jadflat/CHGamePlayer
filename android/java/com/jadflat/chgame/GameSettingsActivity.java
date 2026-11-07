@@ -13,6 +13,9 @@ import android.os.Bundle;
 public class GameSettingsActivity extends Page {
     private SharedPreferences prefs;
     private String file, title;
+    /** Release notes being fetched (static: a rotation's new instance must not start a second fetch) and the live screen. */
+    private static String notesFor;
+    private static GameSettingsActivity live;
 
     @Override
     protected void onCreate(Bundle saved) {
@@ -21,6 +24,7 @@ public class GameSettingsActivity extends Page {
         file = getIntent().getStringExtra("file");
         title = getIntent().getStringExtra("title");
         if (file == null) { finish(); return; }
+        live = this;
         if (title == null) title = Saves.base(file);
         build();
         new Thread(() -> {
@@ -104,6 +108,25 @@ public class GameSettingsActivity extends Page {
             } catch (Exception ex) {
                 android.widget.Toast.makeText(this, "No browser to open it", android.widget.Toast.LENGTH_LONG).show();
             }
+        });
+        if (repo != null) row("Release notes", "What changed in the latest release", () -> {
+            if (repo.equals(notesFor)) return;
+            notesFor = repo;
+            android.widget.Toast.makeText(this, "Getting the release notes…", android.widget.Toast.LENGTH_SHORT).show();
+            final String head = title;
+            final android.app.Application app = getApplication();
+            new Thread(() -> {
+                String n;
+                try { n = Updates.releaseNotes(repo); if (n == null) n = repo + " has no release yet."; }
+                catch (Exception ex) { n = "Couldn't get the notes (" + (ex.getMessage() != null ? ex.getMessage() : ex.getClass().getSimpleName()) + ")."; }
+                final String msg = n;
+                new android.os.Handler(app.getMainLooper()).post(() -> {
+                    if (repo.equals(notesFor)) notesFor = null;
+                    GameSettingsActivity a2 = live;                 /* the screen showing now, even after a rotation */
+                    if (a2 != null && repo.equals(Updates.repoFor(a2, a2.prefs, a2.file)) && !a2.isFinishing() && !a2.isDestroyed())
+                        new CardDialog.Builder(a2).setTitle(head + ": release notes").setMessage(msg).setPositiveButton("OK", null).show();
+                });
+            }).start();
         });
         row("Remove game", "Delete the game file; you choose whether it can be downloaded again", this::confirmRemove);
         focus();
@@ -224,5 +247,11 @@ public class GameSettingsActivity extends Page {
     private static int indexOf(String[] a, String v) {
         for (int i = 0; i < a.length; i++) if (a[i].equals(v)) return i;
         return 0;
+    }
+
+    @Override
+    protected void onDestroy() {
+        if (live == this) live = null;
+        super.onDestroy();
     }
 }

@@ -123,6 +123,7 @@ static inline uint32_t c4(unsigned v) { return v << 2 | v >> 2; }
 
 static void pixel_byte(ChgSt7735 *lcd, uint8_t b)
 {
+    if ((unsigned)lcd->npix >= sizeof lcd->pix) lcd->npix = 0;   /* a bad state's count: start a new pixel */
     lcd->pix[lcd->npix++] = b;
     switch (lcd->colmod & 7) {
     case 5:     /* 16 bit: RRRRRGGG GGGBBBBB (9.8.21) */
@@ -313,7 +314,7 @@ void st7735_render(const ChgSt7735 *lcd, uint32_t out[128 * 128])
         if (!lcd->inverted && !lcd->idle) {
             for (int x = 0; x < 128; x++) {
                 const uint32_t v = src[-x];
-                const uint32_t r = v >> 12, g = (v >> 6) & 63, b = v & 63;
+                const uint32_t r = (v >> 12) & 63, g = (v >> 6) & 63, b = v & 63;
                 const uint32_t R = swap ? b : r, B = swap ? r : b;
                 dst[x] = lut[R] << 16 | lut[g] << 8 | lut[B];
             }
@@ -326,7 +327,7 @@ void st7735_render(const ChgSt7735 *lcd, uint32_t out[128 * 128])
             /* idle: eight colours from the top bit of each (10.1.32) */
             if (lcd->idle)
                 v = ((v & 0x20000) ? 0x3f000 : 0) | ((v & 0x800) ? 0xfc0 : 0) | ((v & 0x20) ? 0x3f : 0);
-            uint32_t r = v >> 12, g = (v >> 6) & 63, b = v & 63;
+            uint32_t r = (v >> 12) & 63, g = (v >> 6) & 63, b = v & 63;
             if (swap) { uint32_t t = r; r = b; b = t; }
             dst[x] = c8(r) << 16 | c8(g) << 8 | c8(b);
         }

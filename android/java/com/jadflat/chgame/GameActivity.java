@@ -181,6 +181,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
                 saves.mkdirs();
                 clearRewind();      /* a new run starts with an empty ring */
                 Options.apply(getSharedPreferences(MainActivity.PREFS, MODE_PRIVATE), name);
+                if (!coreIdle()) throw new java.io.IOException("the last game is still stuck in a frame");
                 if (!Native.start(g.getPath(), new File(getFilesDir(), "sys").getPath(), saves.getPath(),
                         new File(getFilesDir(), "log.txt").getPath()))
                     err = "This game would not start.";
@@ -363,9 +364,9 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     @Override
     protected void onPause() {
         super.onPause();
-        pauseGame();
+        boolean idle = pauseGame();
         abortClip();    /* leaving the app: a clip in progress is dropped */
-        if (started) {
+        if (started && idle) {
             Stats.addPlay(this, name, played);
             played = 0;
             writeResumePoint();
@@ -406,16 +407,16 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     protected void onDestroy() {
         super.onDestroy();
         ((android.hardware.input.InputManager) getSystemService(INPUT_SERVICE)).unregisterInputDeviceListener(padListener);
-        pauseGame();
+        boolean idle = pauseGame();
         abortClip();
         if (current != this) return;   /* a newer game owns the core now */
         current = null;
-        if (started) {
+        if (started && idle) {
             Native.stop();
             exportCard();
             started = false;
         }
-        Preview.gameRunning = false;
+        if (idle) Preview.gameRunning = false;   /* stuck: the preview must not start the core under the frame */
     }
 
     private void exportCard() {
@@ -429,6 +430,11 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
 
     private synchronized void resumeGame() {
         if (!started || running || holder == null || menuOpen) return;
+        if (!coreIdle()) {          /* the last frame is still running: start once it has ended */
+            watch.removeCallbacks(retryResume);
+            watch.postDelayed(retryResume, 250);
+            return;
+        }
         running = true;
         runSince = android.os.SystemClock.elapsedRealtime();
         thread = new Thread(this::loop, "chgame");
@@ -438,8 +444,23 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         watch.postDelayed(watchdog, 1000);
     }
 
-    private void pauseGame() {
+    private final Runnable retryResume = this::resumeGame;
+
+    /** The loop thread that did not stop when last paused (a frame stuck over 2 s); the core is not touched while it runs. */
+    private static volatile Thread stuck;
+
+    /** True when the core is still: no loop thread runs Native.frame. */
+    private static boolean coreIdle() {
+        Thread t = stuck;
+        if (t != null && t.isAlive()) return false;
+        stuck = null;
+        return true;
+    }
+
+    /** Stops the loop thread; false when it is still inside a frame after 2 s (then the core must not be touched). */
+    private boolean pauseGame() {
         watch.removeCallbacks(watchdog);
+        watch.removeCallbacks(retryResume);
         Thread t;
         synchronized (this) {
             if (running) played += android.os.SystemClock.elapsedRealtime() - runSince;
@@ -449,7 +470,9 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         }
         if (t != null) {
             try { t.join(2000); } catch (InterruptedException ignored) { }
+            if (t.isAlive()) stuck = t;
         }
+        return coreIdle();
     }
 
     private void loop() {
@@ -975,7 +998,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
             toast("Bad game name");
             return;
         }
-        pauseGame();    /* the machine must be still while it is copied */
+        if (!pauseGame()) { toast("The game is busy: try again"); closeMenu(); return; }    /* the machine must be still while it is copied */
         if (save) {
             boolean ok = Native.saveState(f.getPath());
             if (ok) slotPicture(f);
@@ -1036,7 +1059,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
             list.addView(row, lp);
             row.setOnClickListener(v -> {
                 d.dismiss();
-                pauseGame();    /* the machine must be still while it is copied */
+                if (!pauseGame()) { toast("The game is busy: try again"); closeMenu(); return; }    /* the machine must be still while it is copied */
                 if (save) {
                     boolean ok = Native.saveState(f[slot].getPath());
                     if (ok) slotPicture(f[slot]);

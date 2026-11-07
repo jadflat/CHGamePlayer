@@ -12,6 +12,7 @@
  */
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <string.h>
 #include <ctype.h>
 #include <dirent.h>
@@ -270,6 +271,10 @@ static Entry *list_dir(const char *path, int *count)
     struct dirent *de;
     while (e && (de = readdir(d))) {
         if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, "..") || strlen(de->d_name) > 255) continue;
+        {   /* a write-back cut short (see write_if_changed) is not a card file */
+            const size_t l = strlen(de->d_name);
+            if (l > 7 && !strcmp(de->d_name + l - 7, ".chgtmp")) continue;
+        }
         char full[2048];
         snprintf(full, sizeof full, "%s/%s", path, de->d_name);
         struct stat st;
@@ -575,10 +580,21 @@ static bool write_if_changed(const char *path, const uint8_t *data, size_t n)
         fclose(f);
         if (same && at == n) return true;
     }
-    f = fopen(path, "wb");
+    /* a new file renamed over the old: never rewritten in place, so a hard-linked copy (the app's
+       preview card) keeps its own bytes, and a failed write leaves the old file whole */
+    char tmp[4200];
+    if (snprintf(tmp, sizeof tmp, "%s.chgtmp", path) >= (int)sizeof tmp) return false;
+    f = fopen(tmp, "wb");
     if (!f) return false;
-    const bool ok = fwrite(data, 1, n, f) == n;
-    fclose(f);
+    bool ok = fwrite(data, 1, n, f) == n;
+    if (fclose(f)) ok = false;
+    if (ok) {
+#ifdef _WIN32
+        remove(path);
+#endif
+        ok = rename(tmp, path) == 0;
+    }
+    if (!ok) remove(tmp);
     return ok;
 }
 
@@ -759,6 +775,7 @@ bool sdcard_layout_valid(const SdCard *c, const SdLayout *l)
 {
     if (!l || l->n < 1 || l->n > SDLAYOUT_MAX || !l->card_size || (l->card_size & (SECTOR - 1))) return false;
     if (l->card_size > (4ull << 30) && !(c && l->card_size == c->size)) return false;
+    if ((uint64_t)l->card_size >= (uint64_t)SIZE_MAX) return false;     /* 32-bit: a size_t can't hold it */
     for (uint32_t i = 0; i < l->n; i++)
         if (!memchr(l->e[i].path, 0, sizeof l->e[i].path)) return false;
     return true;

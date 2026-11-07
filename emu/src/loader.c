@@ -87,7 +87,9 @@ static bool load_hex(ChgMachine *m, const char *text, uint32_t *lowest, char *er
         while (*p && *p != ':') p++;
         if (!*p) break;
         p++;
-        const int n = hexval(p, 2), a = hexval(p + 2, 4), type = hexval(p + 6, 2);
+        /* each field only once the one before it parsed: a record cut short at the end of the text
+           must not be read past its terminator */
+        const int n = hexval(p, 2), a = n < 0 ? -1 : hexval(p + 2, 4), type = a < 0 ? -1 : hexval(p + 6, 2);
         if (n < 0 || a < 0 || type < 0) { snprintf(err, errlen, "not an Intel HEX file"); return false; }
         uint8_t data[256];
         for (int i = 0; i < n; i++) {

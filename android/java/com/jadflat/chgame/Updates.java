@@ -1149,6 +1149,76 @@ final class Updates {
     }
 
     /**
+     * The latest release's tag and notes as plain text, from the github.com release page (one HEAD and one GET, no API
+     * budget), else the API; null when the repo has no release. Blocking.
+     */
+    static String releaseNotes(String full) throws IOException {
+        String tag = null;
+        IOException webErr = null;
+        try {
+            tag = probeTag(full);                                   /* "-" = no release; records back-off itself */
+            if (tag.equals("-")) return null;
+            String body = markdownBody(fetch("https://github.com/" + full + "/releases/tag/" + Uri.encode(tag, "/")));
+            return tag + "\n\n" + (body == null || body.isEmpty() ? "No notes for this release." : body);
+        } catch (IOException e) {
+            webErr = e;                                             /* limit, network or a page that moved: try the API */
+        }
+        try {
+            JSONObject r = new JSONObject(fetchJson("https://api.github.com/repos/" + full + "/releases/latest"));
+            String t = r.isNull("tag_name") ? "" : r.optString("tag_name", "");
+            String b = r.isNull("body") ? "" : plainMarkdown(r.optString("body", "").replace("\r", ""));
+            return t + "\n\n" + (b.isEmpty() ? "No notes for this release." : b);
+        } catch (org.json.JSONException e) {
+            throw new IOException("bad answer");
+        } catch (IOException e) {
+            if (String.valueOf(e).contains("HTTP 404")) {
+                if (tag != null) return tag + "\n\nNo notes found for this release.";
+                return null;                                        /* the API: 404 = no release (or no such repo) */
+            }
+            throw e instanceof Blocked && webErr != null ? webErr : e;
+        }
+    }
+
+    /** Release-note Markdown as the plain text the page path gives: no comments, marks, heading hashes or link URLs. */
+    static String plainMarkdown(String md) {
+        StringBuilder out = new StringBuilder();
+        boolean code = false;
+        for (String line : md.split("\n", -1)) {
+            if (line.trim().startsWith("```")) { code = !code; continue; }
+            if (!code) {
+                line = line.replaceAll("^ {0,3}#{1,6}[ \\t]+", "")
+                        .replaceAll("^([ \\t]*)[-*+][ \\t]+", "$1\u2022 ")
+                        .replaceAll("!?\\[([^\\]]*)\\]\\([^)]*\\)", "$1")
+                        .replaceAll("\\*\\*(.+?)\\*\\*", "$1")
+                        .replaceAll("`([^`]*)`", "$1");
+            }
+            out.append(line).append('\n');
+        }
+        return out.toString().replaceAll("(?s)<!--.*?-->", "").replace("&amp;", "&").replace("&lt;", "<")
+                .replace("&gt;", ">").replace("&quot;", "\"").replace("&#39;", "'").replaceAll("\n{3,}", "\n\n").trim();
+    }
+
+    /** The text of a release page's notes (the markdown-body div, nested divs counted); null when the page has none. */
+    private static String markdownBody(String html) {
+        java.util.regex.Matcher open = java.util.regex.Pattern
+                .compile("(?i)<div\\b[^>]*class=\"[^\"]*\\bmarkdown-body\\b[^\"]*\"[^>]*>").matcher(html);
+        if (!open.find()) return null;
+        int st = open.end(), depth = 1, end = -1;
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile("(?i)<(/?)div\\b").matcher(html);
+        int i = st;
+        while (m.find(i)) {
+            depth += m.group(1).isEmpty() ? 1 : -1;
+            i = m.end();
+            if (depth == 0) { end = m.start(); break; }
+        }
+        if (end < 0) return null;
+        String t = html.substring(st, end).replaceAll("(?i)<br\\s*/?>|</p>|</li>|</h\\d>|</pre>", "\n")
+                .replaceAll("(?i)<li[^>]*>", "\u2022 ");
+        return strip(t).replaceAll("[ \\t]+\n", "\n").replaceAll("\u2022\\s+", "\u2022 ")
+                .replaceAll("\n\\s*\n(?=\u2022)", "\n").replaceAll("\n{3,}", "\n\n").trim();
+    }
+
+    /**
      * The latest release tag from github.com/<repo>/releases/latest without following its redirect (one small web request,
      * no API call, no page body): "-" when the repo has no release. Throws on a limit or a network error.
      */

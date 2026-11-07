@@ -100,14 +100,15 @@ final class Files {
                 /* a .DAT is the game's data, never written by the game: it is current only if it is the very file
                    imported (same size, stamp and header); other files may have been changed by the game, so a newer copy stays */
                 boolean data = e.path.toUpperCase(Locale.ROOT).endsWith(".DAT") && !e.path.toUpperCase(Locale.ROOT).contains("SAVE");   /* a save is written by the game: the newer copy stays */
-                boolean same = f.isFile() && f.length() == e.size
-                        && (data ? f.lastModified() == e.modified && sameHead(cr, e.uri, f) : f.lastModified() >= e.modified);
+                boolean same = f.isFile() && (data ? f.length() == e.size && f.lastModified() == e.modified && sameHead(cr, e.uri, f)
+                        : (f.length() == e.size && f.lastModified() == e.modified) || f.lastModified() > e.modified);
+                /* a game file: imported copies carry the folder's stamp, so a later stamp means the game wrote it (it stays) */
                 if (!same) {
                     f.getParentFile().mkdirs();
                     try (InputStream in = cr.openInputStream(e.uri); OutputStream out = new FileOutputStream(f)) {
                         copy(in, out);
                     }
-                    if (data && e.modified > 0) f.setLastModified(e.modified);
+                    if (e.modified > 0) f.setLastModified(e.modified);
                 }
                 stamps.put(e.path, f.lastModified());
             } catch (IOException | RuntimeException ex) {

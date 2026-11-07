@@ -151,7 +151,7 @@ final class Preview {
     private void run(Files.Entry e, String fileName, int s) {
         synchronized (CORE) {
             if (s != session || gameRunning) return;
-            File game, saves;
+            File game, saves, sys;
             try {
                 game = Files.copyGame(a, e.uri, fileName);
                 Files.importData(a);
@@ -162,13 +162,18 @@ final class Preview {
                 saves.mkdirs();
                 File[] old = saves.listFiles();
                 if (old != null) for (File o : old) o.delete();
+                /* its own card too: the real one hard-linked (no copying), so what the game writes in the
+                   preview never reaches the player's card (the core replaces files, it never writes in place) */
+                sys = new File(a.getCacheDir(), "preview-sys");
+                wipe(sys);
+                mirror(new File(a.getFilesDir(), "sys"), sys);
             } catch (Exception ex) {
                 return;
             }
             if (s != session) return;
             SharedPreferences p = a.getSharedPreferences(MainActivity.PREFS, Activity.MODE_PRIVATE);
             Options.apply(p, fileName);
-            if (!Native.start(game.getPath(), new File(a.getFilesDir(), "sys").getPath(), saves.getPath(),
+            if (!Native.start(game.getPath(), sys.getPath(), saves.getPath(),
                     new File(a.getCacheDir(), "preview.log").getPath()))
                 return;
             /* run unseen and silent, flat out, until the screen is ready and the card has been
@@ -237,6 +242,28 @@ final class Preview {
             track.flush();
             track.release();
             Native.stop();
+        }
+    }
+
+    private static void wipe(File f) {
+        File[] in = f.listFiles();
+        if (in != null) for (File c : in) wipe(c);
+        f.delete();
+    }
+
+    /** dst as a tree of hard links to src's files (a copy where a link fails). */
+    private static void mirror(File src, File dst) throws java.io.IOException {
+        dst.mkdirs();
+        File[] in = src.listFiles();
+        if (in == null) return;
+        for (File c : in) {
+            File d = new File(dst, c.getName());
+            if (c.isDirectory()) { mirror(c, d); continue; }
+            try {
+                android.system.Os.link(c.getPath(), d.getPath());
+            } catch (android.system.ErrnoException e) {
+                java.nio.file.Files.copy(c.toPath(), d.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            }
         }
     }
 }

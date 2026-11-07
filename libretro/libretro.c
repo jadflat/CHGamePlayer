@@ -871,8 +871,11 @@ RETRO_API bool retro_unserialize(const void *data, size_t size)
     const double cps = audio.cycles_per_sample;
     /* the card first, then the machine: it may be reading mid-block */
     if (sd && layout && layout->card_size) {
-        if (!sdcard_layout_apply(sd, layout))
-            core_log(RETRO_LOG_WARN, "SD card: could not restore the saved layout");
+        if (!sdcard_layout_apply(sd, layout)) {
+            /* the card is left as it was; the state's FatFs would point at the wrong sectors */
+            core_log(RETRO_LOG_WARN, "SD card: could not restore the saved layout: state not loaded");
+            return false;
+        }
     }
     memcpy(&m, sm, sizeof m);
     memcpy(&audio, sa, sizeof audio);
