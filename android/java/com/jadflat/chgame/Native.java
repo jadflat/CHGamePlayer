@@ -8,6 +8,12 @@ final class Native {
     static final int B = 1, SELECT = 1 << 2, START = 1 << 3, UP = 1 << 4, DOWN = 1 << 5,
             LEFT = 1 << 6, RIGHT = 1 << 7, A = 1 << 8;
 
+    /** The core takes RetroArch's B (south) as the board's A and RetroArch's A (east) as the board's B
+     *  (libretro.c), so the app's A and B bits trade places on the way in. */
+    static int toCore(int b) {
+        return (b & ~(A | B)) | ((b & A) != 0 ? B : 0) | ((b & B) != 0 ? A : 0);
+    }
+
     /** A core option: chgame_sound (bare pin|piezo), chgame_volume (10%..150%). */
     static native void setOption(String key, String value);
     /** game: a .CHG file; sys: the folder holding chgame/sdcard; saves: where game.sav goes */

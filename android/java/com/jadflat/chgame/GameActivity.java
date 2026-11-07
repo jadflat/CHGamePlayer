@@ -594,7 +594,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     /** Native.frame, timed for the speed line. */
     private int timedFrame(int buttons, int[] px, short[] sound) {
         long t = System.nanoTime();
-        int n = Native.frame(buttons, px, sound);
+        int n = Native.frame(Native.toCore(buttons), px, sound);
         frameAt = System.nanoTime();
         speedNanos += System.nanoTime() - t;
         speedFrames++;
@@ -926,7 +926,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
 
     /** Buttons held on the touch pad (none while it is hidden). Read on the loop thread. */
     private int padBits() {
-        return touch.getVisibility() == View.VISIBLE ? touch.buttons() : 0;
+        return touch.getVisibility() == View.VISIBLE ? keymap.swapBits(touch.buttons()) : 0;
     }
 
     /* ---------------------------------------------------------------- */

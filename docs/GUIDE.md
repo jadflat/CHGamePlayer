@@ -5,7 +5,7 @@ Nova, with the **CHGame Player** app, alone or started from the ES-DE game list:
 
 | | What it is | Best for |
 |---|---|---|
-| **A. CHGame Player** | a small app of its own (`CHGamePlayer-1.68.apk`) | the simplest setup |
+| **A. CHGame Player** | a small app of its own (`CHGamePlayer-1.71.apk`) | the simplest setup |
 | **B. ES-DE** | a game-list front end that starts the app for you | one menu for every system you play |
 
 The RetroArch (libretro) core for the same emulator is a separate project:
@@ -20,7 +20,7 @@ Release file:
 
 | File | For |
 |---|---|
-| `CHGamePlayer-1.68.apk` | A, and B |
+| `CHGamePlayer-1.71.apk` | A, and B |
 | `frontends/es_systems.xml`, `frontends/es_find_rules.xml` | B |
 
 Your games:
@@ -38,7 +38,7 @@ a microSD card, or any file-sharing app you already use. The Retroid's internal 
 ## A. CHGame Player (the app)
 
 ### Install
-1. Copy `CHGamePlayer-1.68.apk` to the Retroid, for example into `Download`.
+1. Copy `CHGamePlayer-1.71.apk` to the Retroid, for example into `Download`.
 2. Open it in the Retroid's file manager. The first time, Android asks you to allow installs
    from that file manager: allow it, go back, and tap the APK again. Then tap **Install**.
 3. *CHGame* now appears with your apps.
@@ -248,8 +248,7 @@ for now.
    - **App (A):** in the same `ROMs/chgame` folder, and in the app choose it as the games folder (*Options → Games folder*)
      and pick `ROMs/chgame`. Do this once. ES-DE lists only the `.CHG` files, so the `.DAT`
      files don't show up as games.
-   - **RetroArch (the core):** in `/storage/emulated/0/RetroArch/system/chgame/sdcard/`, as the core's guide says.
-   - **Both:** put a copy in each place.
+   - **RetroArch (the core):** in the same folder too, beside the `.CHG`, as the core's guide says.
 
 ### 4. Tell ES-DE about CHGame
 ES-DE doesn't know CHGame, so add it as a custom system:

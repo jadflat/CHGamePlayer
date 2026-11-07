@@ -44,7 +44,7 @@ final class TouchControls extends View {
 
     /* the layout: each group's offset (fractions of the view's width and height) and size, per orientation */
     private final float[] fx = new float[GROUPS], fy = new float[GROUPS], gs = new float[GROUPS];
-    private boolean vibrate;
+    private boolean vibrate, swapAB, swapSS;   /* the swap options: the labels follow them */
     private boolean editing;
     private int selected = G_DPAD;
     private Runnable onMenu;
@@ -101,6 +101,8 @@ final class TouchControls extends View {
             }
         }
         vibrate = Options.vibrate(p);
+        swapAB = Options.swapAB(p);
+        swapSS = Options.swapSS(p);
         setAlpha(Options.touchOpacity(p) / 100f);
     }
 
@@ -245,10 +247,10 @@ final class TouchControls extends View {
         line.setColor(LINE);
         g.drawPath(cross, line);
 
-        drawButton(g, aX, aY, btnRA, textA, "A", (m & Native.A) != 0);
-        drawButton(g, bX, bY, btnRB, textB, "B", (m & Native.B) != 0);
-        drawPill(g, selX, pillY, pillW, pillH, textPill, "SELECT", (m & Native.SELECT) != 0);
-        drawPill(g, startX, pillY, pillW, pillH, textPill, "START", (m & Native.START) != 0);
+        drawButton(g, aX, aY, btnRA, textA, swapAB ? "B" : "A", (m & Native.A) != 0);
+        drawButton(g, bX, bY, btnRB, textB, swapAB ? "A" : "B", (m & Native.B) != 0);
+        drawPill(g, selX, pillY, pillW, pillH, textPill, swapSS ? "START" : "SELECT", (m & Native.SELECT) != 0);
+        drawPill(g, startX, pillY, pillW, pillH, textPill, swapSS ? "SELECT" : "START", (m & Native.START) != 0);
         drawPill(g, menuX, menuY, menuW, menuH, textMenu, "MENU", false);
         if (editing) {
             /* the selected group, outlined in the app's yellow */

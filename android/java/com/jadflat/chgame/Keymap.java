@@ -136,6 +136,13 @@ final class Keymap {
         return b;
     }
 
+    /** The swap options applied to a set of button bits (the touch pad's). */
+    int swapBits(int b) {
+        if (swapAB) b = (b & ~(Native.A | Native.B)) | ((b & Native.A) != 0 ? Native.B : 0) | ((b & Native.B) != 0 ? Native.A : 0);
+        if (swapSS) b = (b & ~(Native.START | Native.SELECT)) | ((b & Native.START) != 0 ? Native.SELECT : 0) | ((b & Native.SELECT) != 0 ? Native.START : 0);
+        return b;
+    }
+
     String keyFor(int button) {
         for (int i = 0; i < map.size(); i++)
             if (map.valueAt(i) == button) return name(map.keyAt(i));

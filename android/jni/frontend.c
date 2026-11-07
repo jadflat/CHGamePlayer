@@ -56,6 +56,7 @@ static bool env(unsigned cmd, void *data)
         return true;
     case RETRO_ENVIRONMENT_GET_VARIABLE: {
         struct retro_variable *v = data;
+        if (!strcmp(v->key, "chgame_card_dir")) { v->value = "system"; return true; }  /* the app fills sys/chgame/sdcard */
         for (int i = 0; i < nopt; i++)
             if (!strcmp(v->key, opt_key[i])) { v->value = opt_val[i]; return true; }
         return false;

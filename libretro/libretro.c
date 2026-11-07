@@ -16,6 +16,7 @@
 #include <stdarg.h>
 #include <math.h>
 #include <sys/stat.h>
+#include <utime.h>
 #include <dirent.h>
 #ifdef _WIN32
 #include <direct.h>
@@ -30,7 +31,7 @@
 #include "audio.h"
 #include "sdcard.h"
 
-#define CORE_VERSION    "0.7"
+#define CORE_VERSION    "0.8"
 #define AUDIO_RATE      48000
 #define FPS             60
 #define FRAME_CYCLES    (CHG_HCLK / FPS)
@@ -444,8 +445,8 @@ static void copy_file(const char *from, const char *to)
     if (b) fclose(b);
 }
 
-/* Up to MAX_DATS .DAT files from the game's folder onto the card (a file
-   already there is left alone: a game may write its own): the ones the game
+/* Up to MAX_DATS .DAT files from the game's folder onto the card (copied again
+   whenever the game's folder holds a different size or time): the ones the game
    names first, then others sharing at least 3 letters of prefix with the game's
    name, or every one with the option "All .DAT in folder". */
 static void mount_dats(const char *game, const char *card_dir)
@@ -475,11 +476,14 @@ static void mount_dats(const char *game, const char *card_dir)
     }
     closedir(d);
     for (int k = 0; k < n; k++) {
-        if (sd_has_file(card_dir, picked[k])) continue;
         char from[4096], to[4096];
         snprintf(from, sizeof from, "%s/%s", dir, picked[k]);
         snprintf(to, sizeof to, "%s/%s", card_dir, picked[k]);
+        /* the games folder is the master: refresh the staged copy when its size or time differs */
+        struct stat sa, sb;
+        if (!stat(from, &sa) && !stat(to, &sb) && sa.st_size == sb.st_size && sa.st_mtime == sb.st_mtime) continue;
         copy_file(from, to);
+        if (!stat(from, &sa)) { struct utimbuf t = { sa.st_atime, sa.st_mtime }; utime(to, &t); }  /* same time as the master */
         core_log(RETRO_LOG_INFO, "put %s on the SD card", picked[k]);
     }
 }
@@ -502,7 +506,7 @@ static void check_dat_files(const char *path, const char *card_dir)
     if (!missing) return;
 
     static char shown[400];
-    snprintf(shown, sizeof shown, "Missing on the SD card: %s (put %s in system/chgame/sdcard)",
+    snprintf(shown, sizeof shown, "Missing on the SD card: %s (put %s beside the game)",
              msg, missing > 1 ? "them" : "it");
     core_log(RETRO_LOG_WARN, "%s", shown);
     struct retro_message rm = { shown, 600 };
@@ -551,8 +555,14 @@ RETRO_API bool retro_load_game(const struct retro_game_info *game)
         dat_all = opt("chgame_dat_all")[0] == 'A';
         if (env_cb(RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY, &sys) && sys) {
             char chg_dir[1024];
-            join_dir(chg_dir, sizeof chg_dir, sys, "chgame");
+            /* the DATs stay beside the games; the card is staged in the save folder, never in bios */
+            const char *base = sys;
+            /* (the Android app fills its own card in its system folder: it asks for that with chgame_card_dir) */
+            if (strcmp(opt("chgame_card_dir"), "system") != 0
+                    && !(env_cb(RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY, &base) && base)) base = sys;
+            join_dir(chg_dir, sizeof chg_dir, base, "chgame");
             join_dir(sd_path, sizeof sd_path, chg_dir, "sdcard");
+            make_dir(base); make_dir(chg_dir); make_dir(sd_path);
             mount_dats(game->path, sd_path);
             folder_card = true;
             if (!(m.sd = sdcard_open(sd_path, 0, err, sizeof err)))
