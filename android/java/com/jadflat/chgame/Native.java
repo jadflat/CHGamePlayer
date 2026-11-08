@@ -27,6 +27,9 @@ final class Native {
     static native long sdReads();
     static native boolean saveState(String path);
     static native boolean loadState(String path);
+    /** The state as bytes (reuse: an old array of the right size, filled in place); null when there is none. */
+    static native byte[] saveStateBytes(byte[] reuse);
+    static native boolean loadStateBytes(byte[] state);
     static native void stop();
     /** Starts a GIF recording of the 128x128 screen; a running one is dropped first. */
     static native boolean gifBegin();

@@ -78,16 +78,22 @@ final class Saves {
         ContentResolver cr = a.getContentResolver();
         try {
             Uri target = null;
-            for (Files.Entry e : Files.list(cr, tree))
-                if (e.path.equals(sav.getName())) target = e.uri;
-            if (target == null)
-                target = DocumentsContract.createDocument(cr,
-                        DocumentsContract.buildDocumentUriUsingTree(tree, DocumentsContract.getTreeDocumentId(tree)),
-                        "application/octet-stream", sav.getName());
+            for (Files.Entry e : Files.list(cr, tree, 0))        /* the top of the folder only */
+                if (e.path.equalsIgnoreCase(sav.getName())) target = e.uri;
+            if (target != null) {       /* the one there: never left half written */
+                Files.overwrite(a, target, out -> { try (InputStream in = new FileInputStream(sav)) { copy(in, out); } });
+                return true;
+            }
+            target = DocumentsContract.createDocument(cr,
+                    DocumentsContract.buildDocumentUriUsingTree(tree, DocumentsContract.getTreeDocumentId(tree)),
+                    "application/octet-stream", sav.getName());
             if (target == null) return false;
             try (InputStream in = new FileInputStream(sav); OutputStream out = cr.openOutputStream(target, "wt")) {
-                if (out == null) return false;
+                if (out == null) throw new IOException("no output");
                 copy(in, out);
+            } catch (IOException | RuntimeException ex) {
+                try { DocumentsContract.deleteDocument(cr, target); } catch (Exception ignored) { }   /* no partial save left to be imported */
+                return false;
             }
             return true;
         } catch (Exception e) {
@@ -100,18 +106,15 @@ final class Saves {
         if (tree == null) return false;
         ContentResolver cr = a.getContentResolver();
         Uri src = null;
-        for (Files.Entry e : Files.list(cr, tree))
-            if (e.path.equals(sav.getName()) || (src == null && e.path.equals("saves/" + sav.getName()))) src = e.uri;
+        for (Files.Entry e : Files.list(cr, tree, 1))        /* the top, and its saves folder */
+            if (e.path.equalsIgnoreCase(sav.getName()) || (src == null && e.path.equalsIgnoreCase("saves/" + sav.getName()))) src = e.uri;
         if (src == null) return false;
-        File tmp = new File(sav.getPath() + ".tmp");
-        try (InputStream in = cr.openInputStream(src); OutputStream out = new FileOutputStream(tmp)) {
-            if (in == null) return false;
-            copy(in, out);
+        try (InputStream in = cr.openInputStream(src)) {
+            Files.writeReplacing(in, sav, null, MAX_SAV, 0, true);       /* a save is the 62 KB flash */
+            return true;
         } catch (Exception e) {
-            tmp.delete();
             return false;
         }
-        return tmp.renameTo(sav);
     }
 
     private static void copy(InputStream in, OutputStream out) throws IOException {
@@ -145,7 +148,7 @@ final class Saves {
         for (File f : files) {
             if (f.isDirectory()) {
                 n += copyOut(cr, tree, dirId, f, prefix + f.getName() + "_");
-            } else if (f.isFile()) {
+            } else if (f.isFile() && !f.getName().endsWith(".tmp")) {      /* a write cut short is not a save */
                 try {
                     String mime = f.getName().endsWith(".png") ? "image/png" : "application/octet-stream";
                     SnapMaker.put(cr, tree, dirId, prefix + f.getName(), mime, f);
@@ -169,7 +172,8 @@ final class Saves {
                     File local = localFile(a, e.path.substring(prefix.length()));
                     if (local == null) continue;
                     if (!local.isFile()) fresh.add(e);
-                    else if (e.size != local.length() || e.modified != local.lastModified()) differ.add(e);
+                    /* by content: an exported copy's date is the export's (the folder keeps no other), never the save's */
+                    else if (e.size != local.length() || !sameBytes(a.getContentResolver(), e.uri, local)) differ.add(e);
                 }
             }
             final int got = copyBack(a, fresh);
@@ -181,6 +185,28 @@ final class Saves {
                     () -> new Thread(() -> report(a, got + copyBack(a, differ), fresh.size() + differ.size(), done)).start(),
                     () -> report(a, got, fresh.size(), done)));
         }, "import").start();
+    }
+
+    /** Whether the document holds exactly local's bytes (false when it cannot be read). */
+    static boolean sameBytes(ContentResolver cr, Uri doc, File local) {
+        try (InputStream x = cr.openInputStream(doc); InputStream y = new FileInputStream(local)) {
+            if (x == null) return false;
+            byte[] p = new byte[1 << 16], q = new byte[1 << 16];
+            while (true) {
+                int n = readFull(x, p), m = readFull(y, q);
+                if (n != m) return false;
+                for (int i = 0; i < n; i++) if (p[i] != q[i]) return false;
+                if (n < p.length) return true;
+            }
+        } catch (IOException | RuntimeException e) {
+            return false;
+        }
+    }
+
+    private static int readFull(InputStream in, byte[] b) throws IOException {
+        int n = 0;
+        for (int r; n < b.length && (r = in.read(b, n, b.length - n)) > 0; ) n += r;
+        return n;
     }
 
     /** The local file a backup name goes to, or null if it is not a save, state or picture. */
@@ -201,29 +227,21 @@ final class Saves {
         int n = 0;
         for (Files.Entry e : list) {
             File local = localFile(a, e.path.substring(prefix.length()));
-            if (local != null && copyIn(a.getContentResolver(), e.uri, local)) n++;
+            if (local != null && copyIn(a.getContentResolver(), e, local)) n++;
         }
         return n;
     }
 
     /** A file from the picked folder over dst, through a .tmp so a failed copy leaves dst alone. */
-    private static boolean copyIn(ContentResolver cr, Uri src, File dst) {
-        dst.getParentFile().mkdirs();
-        File tmp = new File(dst.getPath() + ".tmp");
-        try (InputStream in = cr.openInputStream(src); OutputStream out = new FileOutputStream(tmp)) {
-            if (in == null) throw new IOException("cannot open");
-            byte[] b = new byte[1 << 16];
-            long total = 0;
-            for (int n; (n = in.read(b)) > 0; ) {
-                total += n;
-                if (total > MAX_STATE) throw new IOException("too big for a save or state");   /* sizeof(State) is far below this; the core re-checks the contents */
-                out.write(b, 0, n);
-            }
+    private static boolean copyIn(ContentResolver cr, Files.Entry src, File dst) {
+        /* MAX_STATE: sizeof(State) is far below it; the core re-checks the contents. The backup's date is kept, so the
+           next import sees the same file as unchanged */
+        try (InputStream in = cr.openInputStream(src.uri)) {
+            Files.writeReplacing(in, dst, null, dst.getName().endsWith(".sav") ? MAX_SAV : MAX_STATE, src.modified, true);
+            return true;
         } catch (Exception e) {
-            tmp.delete();
             return false;
         }
-        return tmp.renameTo(dst);
     }
 
     private static void report(Activity a, int got, int wanted, Runnable done) {

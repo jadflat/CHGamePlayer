@@ -324,12 +324,7 @@ public class CatalogueActivity extends Page {
         if (cat.equals(old)) return false;
         String num = "\\d+(\\.\\d+)*";
         if (!cat.matches(num) || !old.matches(num)) return true;      /* different, not comparable: an update */
-        String[] a = cat.split("\\."), b = old.split("\\.");
-        for (int i = 0; i < Math.max(a.length, b.length); i++) {
-            long x = i < a.length ? Long.parseLong(a[i]) : 0, y = i < b.length ? Long.parseLong(b[i]) : 0;
-            if (x != y) return x > y;
-        }
-        return false;
+        return Updater.newer(cat, old);     /* one comparison for the app and the games */
     }
 
     /** Fills in each game's .CHG header from the APK where the file is in it. */
@@ -357,13 +352,9 @@ public class CatalogueActivity extends Page {
         status.setVisibility(s.isEmpty() ? View.GONE : View.VISIBLE);
     }
 
+    /** The games folder, if still usable (Files.tree): written to here. */
     private Uri tree() {
-        String s = prefs.getString("tree", null);
-        if (s == null) return null;
-        Uri u = Uri.parse(s);
-        for (UriPermission p : getContentResolver().getPersistedUriPermissions())
-            if (p.getUri().equals(u) && p.isReadPermission() && p.isWritePermission()) return u;
-        return null;
+        return Files.tree(this, "tree", true);
     }
 
     /** What is in the games folder now, then the rows again. */
@@ -711,7 +702,7 @@ public class CatalogueActivity extends Page {
                         JSONObject r = list.getJSONObject(k);
                         String full = r.optString("full_name");
                         String blob = (r.optString("name") + " " + r.optString("description") + " " + r.optJSONArray("topics")).toLowerCase(Locale.ROOT);
-                        if (r.optBoolean("fork") || known.contains(full) || !full.matches("[\\w.-]+/[\\w.-]+")
+                        if (r.optBoolean("fork") && !blob.contains("chgame") || known.contains(full) || !full.matches("[\\w.-]+/[\\w.-]+")
                                 || !(blob.contains("chgame") || r.optString("name").startsWith("CH"))) continue;
                         tried++;
                         dbg.append("\ntry ").append(full);
@@ -856,7 +847,7 @@ public class CatalogueActivity extends Page {
                 /* one game is about 30 KB; a far bigger package is a bundle of many (bateske/CHGame's Casino), not one game */
                 if (pkg == null && a.optLong("size", 0) <= 300000) pkg = new String[] { n, u };
                 continue;
-            } else if (!n.toUpperCase(Locale.ROOT).endsWith(".DAT")) continue;
+            } else if (!Updates.plainData(n)) continue;     /* .DAT, Astarok's .ART ...; others the program names come with Updates.syncData */
             it.files.add(new String[] { n, u, "" });
         }
         if (!chg && pkg != null) {
@@ -1024,13 +1015,14 @@ public class CatalogueActivity extends Page {
             if (SnapMaker.names(cr, mt, "covers").contains(base + ".png")) continue;
             final String line = "Making a cart picture for " + it.name + "…";
             runOnUiThread(() -> say(line));
-            Preview.gameRunning = true;
+            Preview.jobStart();
             try {
                 synchronized (Preview.CORE) {
-                    SnapMaker.cover(this, mt, game, f[0], cart, () -> false);
+                    if (Preview.gameActive) return;     /* a game started meanwhile: the core is its, pictures later */
+                    SnapMaker.cover(this, mt, game, f[0], cart, () -> Preview.gameActive);
                 }
             } finally {
-                Preview.gameRunning = false;
+                Preview.jobEnd();
             }
         }
     }
@@ -1080,12 +1072,15 @@ public class CatalogueActivity extends Page {
                     if (out == null) throw new IOException("cannot write to the games folder");
                     byte[] buf = new byte[1 << 16];
                     long got = 0, shown = 0;
-                    for (int r; (r = in.read(buf)) > 0; ) {
-                        if (got == 0 && Files.isGame(f[0]) && r >= 4) {
-                            if (ChgPackage.isPackage(buf)) pkg = new ByteArrayOutputStream();
-                            else if (!(buf[0] == 'C' && buf[1] == 'H' && buf[2] == 'G' && buf[3] == '1'))
-                                throw new IOException("the release holds neither a .CHG nor a package");
-                        }
+                    /* the first 4 bytes whole, however the network splits them: they say what the file is */
+                    int first = 0;
+                    for (int r; first < 4 && (r = in.read(buf, first, 4 - first)) > 0; ) first += r;
+                    if (Files.isGame(f[0])) {
+                        if (first == 4 && ChgPackage.isPackage(buf)) pkg = new ByteArrayOutputStream();
+                        else if (first < 4 || !(buf[0] == 'C' && buf[1] == 'H' && buf[2] == 'G' && buf[3] == '1'))
+                            throw new IOException("the release holds neither a .CHG nor a package");
+                    }
+                    for (int r = first; r > 0; r = in.read(buf)) {
                         got += r;
                         if (got > (replace ? 16 << 20 : Files.MAX_FILE)) throw new IOException("file too big");
                         sum.update(buf, 0, r);
@@ -1118,10 +1113,7 @@ public class CatalogueActivity extends Page {
                     }
                 }
                 if (replace) {
-                    try (OutputStream out = cr.openOutputStream(overDoc, "wt")) {      /* same file, so its saves stay */
-                        if (out == null) throw new IOException("cannot write to the games folder");
-                        mem.writeTo(out);
-                    }
+                    Files.overwrite(this, overDoc, mem::writeTo);      /* same file, so its saves stay; never half written */
                 }
                 done = true;
             } finally {

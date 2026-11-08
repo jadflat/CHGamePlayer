@@ -37,7 +37,7 @@ import java.util.regex.Pattern;
  * picture as a 512x512 PNG. Lists load off the UI thread, then the page is made.
  */
 public class MediaActivity extends Page {
-    private static final String TITLE = "Screenshots, clips and pictures", SHOTS = "CHGame screenshots";
+    private static final String TITLE = "Screenshots, clips and pictures", SHOTS = Files.SHOTS;
     private static final Pattern STATE_PNG = Pattern.compile("(.+)\\.(\\d+)\\.state\\.png");
     private static final int PICK = 3;      /* OptionsActivity uses 1 and 2 */
 
@@ -393,12 +393,8 @@ public class MediaActivity extends Page {
         runOnUiThread(() -> Saves.toast(this, s));
     }
 
+    /** The games folder, if still usable (Files.tree). */
     private Uri tree() {
-        String s = getSharedPreferences(MainActivity.PREFS, MODE_PRIVATE).getString("tree", null);
-        if (s == null) return null;
-        Uri u = Uri.parse(s);
-        for (UriPermission p : getContentResolver().getPersistedUriPermissions())
-            if (p.getUri().equals(u) && p.isReadPermission()) return u;
-        return null;
+        return Files.tree(this, "tree", false);
     }
 }

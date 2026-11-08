@@ -52,16 +52,26 @@ public class SavesActivity extends Page {
             if (sav.isFile())
                 row("Export to the games folder", "Writes " + base + ".sav into your games folder: a backup, "
                         + "or to use it in RetroArch (same format)", () -> {
-                    Saves.toast(this, Saves.exportSave(this, tree, sav) ? "Exported " + sav.getName() : "Not exported");
-                    build();
+                    new Thread(() -> {      /* the games folder may be slow (SD card, USB, cloud): never on the screen's thread */
+                        boolean ok = Saves.exportSave(this, tree, sav);
+                        runOnUiThread(() -> {
+                            if (isFinishing() || isDestroyed()) return;
+                            Saves.toast(this, ok ? "Exported " + sav.getName() : "Not exported");
+                            build();
+                        });
+                    }, "export-save").start();
                 });
             row("Import from the games folder", "Takes " + base + ".sav from the top of your games folder (or its "
                     + "saves folder)" + (sav.isFile() ? ", replacing this save" : ""), () -> {
-                Runnable go = () -> {
-                    Saves.toast(this, Saves.importSave(this, tree, sav) ? "Imported " + sav.getName()
-                            : "There is no " + sav.getName() + " in the games folder");
-                    build();
-                };
+                Runnable go = () -> new Thread(() -> {      /* off the screen's thread, as the export */
+                    boolean ok = Saves.importSave(this, tree, sav);
+                    runOnUiThread(() -> {
+                        if (isFinishing() || isDestroyed()) return;
+                        Saves.toast(this, ok ? "Imported " + sav.getName()
+                                : "There is no " + sav.getName() + " in the games folder");
+                        build();
+                    });
+                }, "import-save").start();
                 if (sav.isFile()) Saves.confirm(this, "Replace " + title + "'s save with " + sav.getName()
                         + " from the games folder?", go);
                 else go.run();
@@ -123,12 +133,8 @@ public class SavesActivity extends Page {
         r.addView(img, 0, lp);
     }
 
+    /** The games folder, if still usable (Files.tree). */
     private Uri tree() {
-        String s = getSharedPreferences(MainActivity.PREFS, MODE_PRIVATE).getString("tree", null);
-        if (s == null) return null;
-        Uri u = Uri.parse(s);
-        for (UriPermission p : getContentResolver().getPersistedUriPermissions())
-            if (p.getUri().equals(u) && p.isReadPermission()) return u;
-        return null;
+        return Files.tree(this, "tree", false);
     }
 }

@@ -42,7 +42,10 @@ final class Updater {
     }
 
     private static void check(Activity a, SharedPreferences prefs, boolean manual) {
-        if (busy) return;
+        if (busy) {
+            if (manual) a.runOnUiThread(() -> Toast.makeText(a, "A check is already running: try again in a moment", Toast.LENGTH_LONG).show());
+            return;
+        }
         busy = true;
         new Thread(() -> {
             try {
@@ -84,14 +87,17 @@ final class Updater {
     static boolean newer(String a, String b) {
         String[] x = a.replaceFirst("^[vV]", "").split("\\."), y = b.replaceFirst("^[vV]", "").split("\\.");
         for (int i = 0; i < Math.max(x.length, y.length); i++) {
-            int p = i < x.length ? num(x[i]) : 0, q = i < y.length ? num(y[i]) : 0;
-            if (p != q) return p > q;
+            int c = cmp(i < x.length ? x[i] : "0", i < y.length ? y[i] : "0");
+            if (c != 0) return c > 0;
         }
         return false;
     }
 
-    private static int num(String s) {
-        try { return Integer.parseInt(s); } catch (NumberFormatException e) { return 0; }
+    /** Compares two digit strings of any length (a non-number counts as 0). */
+    private static int cmp(String a, String b) {
+        a = a.matches("\\d+") ? a.replaceFirst("^0+(?=\\d)", "") : "0";
+        b = b.matches("\\d+") ? b.replaceFirst("^0+(?=\\d)", "") : "0";
+        return a.length() != b.length() ? Integer.compare(a.length(), b.length()) : a.compareTo(b);
     }
 
     private static void offer(Activity a, SharedPreferences prefs, Found f) {

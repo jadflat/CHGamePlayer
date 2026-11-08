@@ -123,82 +123,124 @@ public class LaunchActivity extends Activity {
         }
     }
 
+    /** Copies the game and checks its card files on a background thread (a slow provider, or another copy of the same
+        game holding its lock, never blocks the screen), then starts it or shows what is missing. configChanges in the
+        manifest keeps a rotation, theme, font or language change from recreating this activity mid-copy. */
     private void go(Uri uri) {
-        String err = null;
-        File game = null;
-        {
+        new Thread(() -> {
+            File game;
             try {
-                String name = displayName(uri);
-                game = Files.copyGame(this, uri, name);
-            } catch (Exception e) {
-                err = "Could not open the game: " + e.getMessage();
+                /* stops when this screen goes (Back, Home: noHistory finishes it): no copy runs on for nothing */
+                game = Files.copyGame(this, uri, displayName(uri), cancel);
+            } catch (Throwable e) {        /* never a crash behind the frontend: a message, and back */
+                if (!closed() && !(e instanceof Files.Cancelled)) fail("Could not open the game: " + why(e));
+                else fail(null);
+                return;
             }
-        }
-        if (err != null) {
-            Toast.makeText(this, err, Toast.LENGTH_LONG).show();
+            if (closed()) return;
+            Cart c = null;
+            List<String> missing = new ArrayList<>();
+            try {
+                c = Cart.read(getContentResolver(), Uri.fromFile(game));
+                missing = missingDats(c, uri, game.getName());
+            } catch (Throwable e) {
+                /* the check could not be made: the game starts as it did before the check existed */
+            }
+            Cart cart = c;
+            List<String> gone = missing;
+            /* no title: null, so GameActivity names the game from its file as it always has */
+            String title = cart != null && !cart.title.isEmpty() ? cart.title : null;
+            String shown = title != null ? title : game.getName();
+            onUi(() -> {
+                if (gone.isEmpty()) {
+                    start(game, title);
+                    return;
+                }
+                new CardDialog.Builder(this)
+                        .setTitle(gone.size() == 1 ? "Missing card file" : "Missing card files")
+                        .setMessage(shown + " needs " + (gone.size() == 1 ? "this file" : "these files") + " on the SD card:\n\n"
+                                + TextUtils.join("\n", gone) + "\n\nPut " + (gone.size() == 1 ? "it" : "them") + " in the games folder.")
+                        .setPositiveButton("Start anyway", (d, w) -> onUi(() -> start(game, title)))
+                        .setNegativeButton("Cancel", (d, w) -> finish())
+                        .setOnCancelListener(d -> finish())
+                        .show();
+            });
+        }, "launch").start();
+    }
+
+    /** Cancelled as soon as this screen is on its way out (Back, Home with noHistory, finish()), not only at
+        onDestroy: the copy then stops in its lock wait, in the provider's open or in a read. */
+    private final android.os.CancellationSignal cancel = new android.os.CancellationSignal();
+    private boolean closed() { return cancel.isCanceled(); }
+
+    @Override
+    protected void onPause() {
+        if (isFinishing()) cancel.cancel();
+        super.onPause();
+    }
+
+    @Override
+    protected void onStop() {
+        if (isFinishing()) cancel.cancel();
+        super.onStop();
+    }
+
+    @Override
+    protected void onDestroy() {
+        cancel.cancel();
+        super.onDestroy();
+    }
+
+    /** Runs on the UI thread while this screen is still up; anything it throws (a window gone between the check and
+        show(), startActivity failing) is logged and ends this screen with a message, instead of crashing the app. */
+    private void onUi(Runnable r) {
+        runOnUiThread(() -> {
+            if (isFinishing() || isDestroyed()) return;
+            try {
+                r.run();
+            } catch (RuntimeException e) {
+                android.util.Log.e("CHGameLaunch", "launch failed", e);
+                fail("Could not start the game: " + why(e));
+            }
+        });
+    }
+
+    /** A message (none when err is null; only while this screen is still up: not over whatever the player went to)
+        and the end. */
+    private void fail(String err) {
+        runOnUiThread(() -> {
+            try {
+                if (err != null && !isFinishing() && !isDestroyed()) Toast.makeText(this, err, Toast.LENGTH_LONG).show();
+            } catch (RuntimeException ignored) { }
             finish();
-            return;
-        }
-        final File launched = game;
-        Cart c;
-        try {
-            c = Cart.read(getContentResolver(), Uri.fromFile(launched));
-        } catch (RuntimeException e) {
-            c = null;               /* not readable: start as before */
-        }
-        List<String> missing = missingDats(c, uri);
-        if (missing.isEmpty()) {
-            start(launched);
-            finish();
-            return;
-        }
-        String title = c != null && !c.title.isEmpty() ? c.title : launched.getName();
-        new CardDialog.Builder(this)
-                .setTitle("Missing card file")
-                .setMessage(title + " needs " + TextUtils.join(", ", missing)
-                        + " on the SD card. Put it in the games folder.")
-                .setPositiveButton("Start anyway", (d, w) -> {
-                    start(launched);
-                    finish();
-                })
-                .setNegativeButton("Cancel", (d, w) -> finish())
-                .setOnCancelListener(d -> finish())
-                .show();
+        });
+    }
+
+    private static String why(Throwable e) {
+        return e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
     }
 
     /** Starts GameActivity on the copied game, with the extras it has always had. */
-    private void start(File game) {
+    private void start(File game, String title) {
         Intent g = new Intent(this, GameActivity.class);
         g.putExtra("file", game.getName());
-        g.putExtra("title", Cart.title(getContentResolver(), Uri.fromFile(game)));
+        g.putExtra("title", title);         /* read on the launch thread: no file I/O here on the UI thread */
         /* a game left with Home must not stay stacked under the next one: both would share the core */
         g.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
         startActivity(g);
+        finish();
     }
 
     /** The card files a game names that are in neither the games folder nor the launched file's folder. */
-    private List<String> missingDats(Cart c, Uri launched) {
-        List<String> missing = new ArrayList<>();
-        if (c == null || c.dats.isEmpty()) return missing;
-        Set<String> have = new HashSet<>();
-        Uri t = tree();
-        if (t != null)
-            for (Files.Entry f : Files.list(getContentResolver(), t))
-                have.add(f.path.substring(f.path.lastIndexOf('/') + 1).toUpperCase(Locale.ROOT));
-        have.addAll(folderNames(launched));
-        for (String d : c.dats)
-            if (!have.contains(d)) missing.add(d);
-        return missing;
+    private List<String> missingDats(Cart c, Uri launched, String file) {
+        java.util.Set<String> need = MainActivity.neededFiles(getSharedPreferences(MainActivity.PREFS, MODE_PRIVATE), c, file);
+        if (need.isEmpty()) return new ArrayList<>();
+        return MainActivity.missingFrom(getContentResolver(), tree(), need, new HashSet<>(folderNames(launched)));
     }
 
-    /** The games folder the user picked, if it is still readable (as MainActivity reads it). */
+    /** The games folder, if still usable (Files.tree). */
     private Uri tree() {
-        String s = getSharedPreferences(MainActivity.PREFS, MODE_PRIVATE).getString("tree", null);
-        if (s == null) return null;
-        Uri u = Uri.parse(s);
-        for (UriPermission p : getContentResolver().getPersistedUriPermissions())
-            if (p.getUri().equals(u) && p.isReadPermission()) return u;
-        return null;
+        return Files.tree(this, "tree", false);
     }
 
     /** The file names (upper case) in the folder the launched file is in; none if its provider will not list it. */

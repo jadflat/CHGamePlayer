@@ -43,19 +43,22 @@ final class SnapMaker {
     interface Cancel { boolean cancelled(); }
 
     private static boolean play;        /* the video shows some play: buttons pressed after the title */
+    private static boolean intro;       /* the game waits on an intro for a key (Preview.needsTap) */
 
     /** The buttons held at video frame f (60 a second), for "the title, then some play": 5 s of
      *  title, then START and A to get in, then right held with A tapped (jump or fire). */
     private static int script(int f) {
-        if (!play) return 0;
         double t = f / 60.0;
+        /* an intro that waits for a key (Press Play On Tape's): the CHGame A (Native.B) at 2 s and 3.5 s */
+        if (intro && (t >= 2 && t < 2.1 || t >= 3.5 && t < 3.6)) return Native.B;
+        if (!play) return 0;
         if (t < 5) return 0;
         if (t < 5.15 || (t >= 7 && t < 7.15)) return Native.START;
-        if ((t >= 6 && t < 6.15) || (t >= 8 && t < 8.15)) return Native.A;
+        if ((t >= 6 && t < 6.15) || (t >= 8 && t < 8.15)) return Native.B;      /* the CHGame A: the core puts it on RetroPad B */
         if (t < 9) return 0;
         int b = Native.RIGHT;
-        if ((f / 15) % 3 == 0) b |= Native.A;
-        if ((f / 90) % 4 == 3) b = Native.LEFT | ((f / 15) % 2 == 0 ? Native.A : 0);
+        if ((f / 15) % 3 == 0) b |= Native.B;
+        if ((f / 90) % 4 == 3) b = Native.LEFT | ((f / 15) % 2 == 0 ? Native.B : 0);
         return b;
     }
 
@@ -67,10 +70,10 @@ final class SnapMaker {
         File mp4 = new File(work, "snap.mp4"), shot = new File(work, "shot.png"), cover = new File(work, "cover.png");
         mp4.delete();
         Bitmap shotBmp = null;
+        intro = Preview.needsTap(c, cart, fileName);
         try {
             File g = Files.copyGame(c, game.uri, fileName);
-            Files.importData(c);
-            Files.ensureData(c, g);
+            Files.importData(c);      /* the card files the game needs (importCard retries a missed one) */
             File saves = new File(work, "saves");
             saves.mkdirs();
             /* no save: as the game starts the first time (with one it may sit on a continue screen) */
@@ -79,7 +82,7 @@ final class SnapMaker {
             android.content.SharedPreferences prefs = c.getSharedPreferences(MainActivity.PREFS, Context.MODE_PRIVATE);
             Options.apply(prefs, fileName);
             play = "play".equals(Options.snaps(prefs));
-            if (!Native.start(g.getPath(), new File(c.getFilesDir(), "sys").getPath(), saves.getPath(),
+            if (!Native.start(g.getPath(), Preview.scratchSys(c, "snap-sys").getPath(), saves.getPath(),
                     new File(work, "log.txt").getPath()))
                 return "would not start";
             try {
@@ -135,14 +138,24 @@ final class SnapMaker {
     }
 
     /** A frame 5 s into a .CHG on disk (for a game with no cart picture); null if it never drew one. Caller holds Preview.CORE. */
-    static Bitmap frame(Context c, File chg, String fileName, Cancel cancel) {
+    static Bitmap frame(Context c, File chg, String fileName, Cancel cancel) { return frame(c, chg, fileName, cancel, false); }
+
+    /** press: taps the CHGame A button (Native.B: the core puts it on RetroPad B) twice (2 s and 3.5 s in), past a title screen that waits for a key (poevoid's Astarok). */
+    static Bitmap frame(Context c, File chg, String fileName, Cancel cancel, boolean press) {
+        Files.importData(c);      /* the card files the game needs (importCard retries a missed one) */
         File work = new File(c.getCacheDir(), "snap");
         File saves = new File(work, "saves");
         saves.mkdirs();
         File[] old = saves.listFiles();
         if (old != null) for (File o : old) o.delete();
         Options.apply(c.getSharedPreferences(MainActivity.PREFS, Context.MODE_PRIVATE), fileName);
-        if (!Native.start(chg.getPath(), new File(c.getFilesDir(), "sys").getPath(), saves.getPath(),
+        File sys;
+        try {
+            sys = Preview.scratchSys(c, "snap-sys");     /* never the player's card: the game may write to it */
+        } catch (java.io.IOException e) {
+            return null;
+        }
+        if (!Native.start(chg.getPath(), sys.getPath(), saves.getPath(),
                 new File(work, "log.txt").getPath()))
             return null;
         try {
@@ -151,7 +164,8 @@ final class SnapMaker {
             if (!settle(px, sound, cancel)) return null;
             for (int f = 0; f < SHOT_AT * 60; f++) {
                 if (cancel.cancelled()) return null;
-                Native.frame(0, px, sound);
+                boolean tap = press && (f >= 120 && f < 126 || f >= 210 && f < 216);
+                Native.frame(tap ? Native.B : 0, px, sound);
             }
             Bitmap b = Bitmap.createBitmap(128, 128, Bitmap.Config.ARGB_8888);
             b.setPixels(px, 0, 128, 0, 0, 128, 128);
@@ -172,14 +186,13 @@ final class SnapMaker {
                 savePng(scale(cart.picture), cover);
             } else {
                 File g = Files.copyGame(c, game.uri, fileName);
-                Files.importData(c);
-                Files.ensureData(c, g);
+                Files.importData(c);      /* the card files the game needs (importCard retries a missed one) */
                 File saves = new File(work, "saves");
                 saves.mkdirs();
                 File[] old = saves.listFiles();
                 if (old != null) for (File o : old) o.delete();
                 Options.apply(c.getSharedPreferences(MainActivity.PREFS, Context.MODE_PRIVATE), fileName);
-                if (!Native.start(g.getPath(), new File(c.getFilesDir(), "sys").getPath(), saves.getPath(),
+                if (!Native.start(g.getPath(), Preview.scratchSys(c, "snap-sys").getPath(), saves.getPath(),
                         new File(work, "log.txt").getPath()))
                     return "would not start";
                 Bitmap shot = null;
@@ -240,6 +253,7 @@ final class SnapMaker {
             for (int f = 0; f < frames; f++) {
                 if (cancel.cancelled()) return null;
                 int n = Native.frame(script(f), px, sound);
+                if (pcmLen + n * 4 > pcm.length) pcm = java.util.Arrays.copyOf(pcm, Math.max(pcm.length * 2, pcmLen + n * 4));     /* the encoder stalled: keep the backlog */
                 for (int i = 0; i < n * 2; i++) {
                     pcm[pcmLen++] = (byte) sound[i];
                     pcm[pcmLen++] = (byte) (sound[i] >> 8);
@@ -470,6 +484,9 @@ final class SnapMaker {
             if (out == null) throw new IOException("cannot write " + name);
             byte[] b = new byte[1 << 16];
             for (int n; (n = in.read(b)) > 0; ) out.write(b, 0, n);
+        } catch (IOException | RuntimeException ex) {
+            if (id == null) try { DocumentsContract.deleteDocument(cr, target); } catch (Exception ignored) { }   /* no partial file */
+            throw ex;
         }
     }
 

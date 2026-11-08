@@ -143,6 +143,12 @@ public class GameSettingsActivity extends Page {
                 .show();
     }
 
+    /** This game's file: by its full path when the list gave one (two folders may hold the same name), else by name. */
+    private boolean isThis(String p) {
+        String full = getIntent().getStringExtra("path");
+        return full != null ? p.equals(full) : p.substring(p.lastIndexOf('/') + 1).equals(file);
+    }
+
     private void removeGame(boolean offerAgain) {
         android.net.Uri t = uriPref("tree", true);
         if (t == null) {
@@ -153,7 +159,7 @@ public class GameSettingsActivity extends Page {
             boolean ok = false, there = false;
             try {
                 for (Files.Entry e : Files.list(getContentResolver(), t))
-                    if (Files.isGame(e.path) && e.path.substring(e.path.lastIndexOf('/') + 1).equals(file)) {
+                    if (Files.isGame(e.path) && isThis(e.path)) {
                         there = true;
                         ok = android.provider.DocumentsContract.deleteDocument(getContentResolver(), e.uri);
                         break;
@@ -177,12 +183,7 @@ public class GameSettingsActivity extends Page {
     private boolean hasClip;
 
     private android.net.Uri uriPref(String key, boolean write) {
-        String s = prefs.getString(key, null);
-        if (s == null) return null;
-        android.net.Uri u = android.net.Uri.parse(s);
-        for (android.content.UriPermission p : getContentResolver().getPersistedUriPermissions())
-            if (p.getUri().equals(u) && (write ? p.isWritePermission() : p.isReadPermission())) return u;
-        return null;
+        return Files.tree(this, key, write);
     }
 
     /** Makes this one game's ES-DE clip, screenshot and cover with SnapMaker, on a thread. */
@@ -201,20 +202,21 @@ public class GameSettingsActivity extends Page {
         getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         new Thread(() -> {
             String err;
-            Preview.gameRunning = true;
+            Preview.jobStart();
             try {
                 Files.Entry found = null;
                 for (Files.Entry e : Files.list(getContentResolver(), t))
-                    if (Files.isGame(e.path) && e.path.substring(e.path.lastIndexOf('/') + 1).equals(file)) { found = e; break; }
+                    if (Files.isGame(e.path) && isThis(e.path)) { found = e; break; }
                 if (found == null) err = "game not found";
                 else {
                     Cart cart = Cart.read(getContentResolver(), found.uri);
                     synchronized (Preview.CORE) {
-                        err = SnapMaker.make(this, m, found, file, cart, () -> false);
+                        err = Preview.gameActive ? "a game is playing: try again after it"
+                                : SnapMaker.make(this, m, found, file, cart, () -> Preview.gameActive);
                     }
                 }
             } finally {
-                Preview.gameRunning = false;
+                Preview.jobEnd();
             }
             final String e2 = err;
             runOnUiThread(() -> {

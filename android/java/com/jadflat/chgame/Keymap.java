@@ -46,9 +46,16 @@ final class Keymap {
         return s != null ? parse(prefs, s) : load(prefs);
     }
 
-    /** Reads "keycode:button,..." (null: nothing saved, so the defaults), then the migrations. */
+    /** A mapping saved knowing every function there is: a function with no key was cleared on purpose ("No key"),
+        so the migrations below never give it one back. */
+    private static final String CURRENT = "v2;";
+
+    /** Reads "keycode:button,..." (null: nothing saved, so the defaults), then the migrations (only for a mapping
+        saved before CURRENT: one saved since keeps its "No key" choices). */
     private static Keymap parse(SharedPreferences prefs, String s) {
         Keymap k = new Keymap();
+        boolean current = s != null && s.startsWith(CURRENT);
+        if (current) s = s.substring(CURRENT.length());
         if (s != null) {
             for (String pair : s.split(",")) {
                 String[] kv = pair.split(":");
@@ -59,7 +66,8 @@ final class Keymap {
         }
         k.swapAB = Options.swapAB(prefs);
         k.swapSS = Options.swapSS(prefs);
-        if (k.map.size() == 0) k.defaults(prefs.getBoolean("swap", false));
+        if (k.map.size() == 0 && !current) k.defaults(prefs.getBoolean("swap", false));
+        if (current) return k;
         /* a mapping saved before fast-forward existed: give it R1 if R1 is free */
         if (k.map.indexOfValue(FAST) < 0 && k.map.get(KeyEvent.KEYCODE_BUTTON_R1, 0) == 0)
             k.map.put(KeyEvent.KEYCODE_BUTTON_R1, FAST);
@@ -86,9 +94,9 @@ final class Keymap {
 
     /** The main mapping, or a game's own when gameFile is set. */
     void save(SharedPreferences prefs, String gameFile) {
-        StringBuilder s = new StringBuilder();
+        StringBuilder s = new StringBuilder(CURRENT);
         for (int i = 0; i < map.size(); i++) {
-            if (s.length() > 0) s.append(',');
+            if (s.length() > CURRENT.length()) s.append(',');
             s.append(map.keyAt(i)).append(':').append(map.valueAt(i));
         }
         if (gameFile != null) {

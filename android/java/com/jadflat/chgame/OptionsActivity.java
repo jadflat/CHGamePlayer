@@ -257,13 +257,9 @@ public class OptionsActivity extends Page {
     /* The games folder                                                   */
     /* ---------------------------------------------------------------- */
 
+    /** The games folder, if still usable (Files.tree). */
     private Uri tree() {
-        String s = prefs.getString("tree", null);
-        if (s == null) return null;
-        Uri u = Uri.parse(s);
-        for (UriPermission p : getContentResolver().getPersistedUriPermissions())
-            if (p.getUri().equals(u) && p.isReadPermission()) return u;
-        return null;
+        return Files.tree(this, "tree", false);
     }
 
     private String folderName() {
@@ -273,12 +269,7 @@ public class OptionsActivity extends Page {
     }
 
     private Uri media() {
-        String s = prefs.getString("mediaTree", null);
-        if (s == null) return null;
-        Uri u = Uri.parse(s);
-        for (UriPermission p : getContentResolver().getPersistedUriPermissions())
-            if (p.getUri().equals(u) && p.isWritePermission()) return u;
-        return null;
+        return Files.tree(this, "mediaTree", true);
     }
 
     private String mediaName() {
@@ -464,7 +455,7 @@ public class OptionsActivity extends Page {
         new Thread(() -> {
             int made = 0;
             StringBuilder problems = new StringBuilder();
-            Preview.gameRunning = true;         /* no list preview while the core is busy here */
+            Preview.jobStart();         /* no list preview while the core is busy here */
             try {
                 for (int i = 0; i < games.size() && !cancelMaking; i++) {
                     Files.Entry e = games.get(i);
@@ -475,13 +466,13 @@ public class OptionsActivity extends Page {
                     runOnUiThread(() -> progress.setText(msg));
                     String err;
                     synchronized (Preview.CORE) {
-                        err = SnapMaker.make(this, m, e, file, cart, () -> cancelMaking);
+                        err = Preview.gameActive ? "a game is playing" : SnapMaker.make(this, m, e, file, cart, () -> cancelMaking || Preview.gameActive);
                     }
                     if (err == null) made++;
                     else if (!cancelMaking) problems.append("\n").append(name).append(": ").append(err);
                 }
             } finally {
-                Preview.gameRunning = false;
+                Preview.jobEnd();
             }
             final String summary = (cancelMaking ? "Stopped. " : "") + "Made media for " + made + " of " + games.size()
                     + (games.size() == 1 ? " game." : " games.") + (problems.length() > 0 ? "\n\nProblems:" + problems : "")

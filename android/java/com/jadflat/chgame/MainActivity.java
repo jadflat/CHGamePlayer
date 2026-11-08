@@ -53,7 +53,7 @@ import java.util.concurrent.Executors;
  * Options, where everything else lives.
  */
 public class MainActivity extends Activity {
-    static final String VERSION = "1.73";
+    static final String VERSION = "2.22";
     static final String PREFS = "chgame";
 
     private SharedPreferences prefs;
@@ -77,10 +77,28 @@ public class MainActivity extends Activity {
     private final Map<String, Integer> sectionCounts = new HashMap<>();   /* games in each section, shown in its header */
     private final Map<Uri, String> titles = new HashMap<>();   /* the title in each header */
     private final Map<Uri, Cart> carts = new HashMap<>();      /* picture, author, version */
+    /** Carts read by refresh, with the file's size and date then: read again only when the file changed. */
+    private final Map<Uri, Object[]> cartCache = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** e's cart: the cached one while the file's size and date are as they were (both known), else read again. */
+    private Cart cartOf(Files.Entry e) {
+        Object[] k = cartCache.get(e.uri);
+        if (k != null && e.size > 0 && e.modified > 0 && (Long) k[0] == e.size && (Long) k[1] == e.modified) return (Cart) k[2];
+        Cart c = Cart.read(getContentResolver(), e.uri);
+        if (c != null) cartCache.put(e.uri, new Object[] { e.size, e.modified, c });
+        else cartCache.remove(e.uri);
+        return c;
+    }
     private final Set<Uri> loading = new HashSet<>();
     private final Map<String, Bitmap> snaps = new HashMap<>();   /* ES-DE title screenshots for carts without a picture */
     private final Set<String> snapTried = new HashSet<>();
     private final ExecutorService reader = Executors.newSingleThreadExecutor();
+
+    /** A job for the reader, unless the screen has gone (its executor is shut down then). */
+    private void readerRun(Runnable r) {
+        if (isDestroyed() || reader.isShutdown()) return;
+        try { reader.execute(r); } catch (java.util.concurrent.RejectedExecutionException ignored) { }
+    }
     private String treeSeen;                                    /* the folder the caches are for */
     private int generation;                                     /* drops a listing a newer one replaced */
     private int shown = -1;
@@ -478,11 +496,12 @@ public class MainActivity extends Activity {
         if (t == null ? treeSeen != null : !t.equals(treeSeen)) {
             synchronized (titles) { titles.clear(); }
             carts.clear();
+            cartCache.clear();
             loading.clear();
             treeSeen = t;
         }
         snaps.clear();                  /* the media maker may have made new screenshots */
-        snapTried.clear();
+        snapTried.clear();      /* snapNone stays: pic() looks again in the background and drops a game from it when one turns up */
         showMute();
         gridMode = Options.gridList(prefs);     /* the refresh below builds the rows in this layout */
         refresh();
@@ -504,18 +523,18 @@ public class MainActivity extends Activity {
             boolean changed = Updates.seedBundled(this, prefs, VERSION);
             if (System.currentTimeMillis() - prefs.getLong("newAt14", 0) > 2 * 3600_000L) {      /* the normal scan: every 2 hours */
                 try {
-                    Updates.limited = false;
+                    int hits = Updates.limitHits.get();
                     changed |= Updates.discover(this, prefs, t);
-                    if (!Updates.limited) prefs.edit().putLong("newAt14", System.currentTimeMillis()).apply();
+                    if (Updates.limitHits.get() == hits) prefs.edit().putLong("newAt14", System.currentTimeMillis()).apply();
                 } catch (RuntimeException e) {
-                    return;
+                    /* next time; what was found before still gets its notice below */
                 }
             }
             if (System.currentTimeMillis() - prefs.getLong("searchAt162", 0) > 24 * 3600_000L) {   /* the wider GitHub search: once a day */
                 try {
-                    Updates.limited = false;
+                    int hits = Updates.limitHits.get();
                     changed |= Updates.search(this, prefs);
-                    if (!Updates.limited) prefs.edit().putLong("searchAt162", System.currentTimeMillis()).apply();
+                    if (Updates.limitHits.get() == hits) prefs.edit().putLong("searchAt162", System.currentTimeMillis()).apply();
                 } catch (RuntimeException e) {
                     /* tomorrow */
                 }
@@ -643,6 +662,7 @@ public class MainActivity extends Activity {
                 Saves.toast(this, err == null ? displayTitle(e) + " updated" : "Could not update: " + err);
                 if (err == null) {
                     carts.remove(e.uri);
+                    cartCache.remove(e.uri);
                     refresh();
                 } else showSelected();
             });
@@ -665,15 +685,19 @@ public class MainActivity extends Activity {
         JSONObject n = newInfo(e);
         Uri t = tree();
         if (n == null || t == null) return;
+        if (!installing.add(e.path)) return;       /* already being installed: a second press does nothing */
         artUpdate.setEnabled(false);
         artUpdate.setText("Installing…");
         new Thread(() -> {
-            String err = Updates.install(this, prefs, t, n);
+            String err;
+            try { err = Updates.install(this, prefs, t, n); } catch (RuntimeException ex) { err = String.valueOf(ex.getMessage()); }
+            final String fe = err;
             runOnUiThread(() -> {
+                installing.remove(e.path);
                 artUpdate.setEnabled(true);
                 if (isFinishing()) return;
-                Saves.toast(this, err == null ? displayTitle(e) + " installed" : "Could not install: " + err);
-                if (err == null) refresh(); else showSelected();
+                Saves.toast(this, fe == null ? displayTitle(e) + " installed" : "Could not install: " + fe);
+                if (fe == null) refresh(); else showSelected();
             });
         }, "install-game").start();
     }
@@ -706,12 +730,16 @@ public class MainActivity extends Activity {
         @Override public void onInputDeviceChanged(int id) { }
         @Override public void onInputDeviceRemoved(int id) {
             touchOffered = false;
-            offerTouch();
+            offerTouch(id);
         }
     };
 
-    static boolean hasPad() {
+    static boolean hasPad() { return hasPad(-1); }
+
+    /** A gamepad or joystick is connected (ignoring device `gone`, one just removed). */
+    static boolean hasPad(int gone) {
         for (int id : InputDevice.getDeviceIds()) {
+            if (id == gone) continue;
             InputDevice d = InputDevice.getDevice(id);
             if (d == null || d.isVirtual()) continue;
             int s = d.getSources();
@@ -721,8 +749,11 @@ public class MainActivity extends Activity {
         return false;
     }
 
-    private void offerTouch() {
-        if (touchOffered || !"off".equals(Options.touch(prefs)) || hasPad()) return;
+    private void offerTouch() { offerTouch(-1); }
+
+    /** Offers the touch pad when no controller is left (ignoring device `gone`, which may still be listed as it goes). */
+    private void offerTouch(int gone) {
+        if (touchOffered || !"off".equals(Options.touch(prefs)) || hasPad(gone)) return;
         touchOffered = true;
         new CardDialog.Builder(this)
                 .setTitle("No controller found")
@@ -757,16 +788,13 @@ public class MainActivity extends Activity {
         super.onDestroy();
         preview.shutdown();
         reader.shutdownNow();
+        runner.shutdownNow();
         shooter.shutdownNow();
     }
 
+    /** The games folder, if still usable (Files.tree). */
     private Uri tree() {
-        String s = prefs.getString("tree", null);
-        if (s == null) return null;
-        Uri u = Uri.parse(s);
-        for (UriPermission p : getContentResolver().getPersistedUriPermissions())
-            if (p.getUri().equals(u) && p.isReadPermission()) return u;
-        return null;
+        return Files.tree(this, "tree", false);
     }
 
     /* ---------------------------------------------------------------- */
@@ -774,9 +802,8 @@ public class MainActivity extends Activity {
     /* ---------------------------------------------------------------- */
 
     private void refresh() {
-        Uri authT = tree();
-        if (authT != null) fillAuthors(authT);
         Uri t = tree();
+        if (t != null) fillAuthors(t);
         if (t == null) {
             games.clear();
             adapter.notifyDataSetChanged();
@@ -803,7 +830,7 @@ public class MainActivity extends Activity {
                 found.add(e);
                 String title;
                 synchronized (titles) { title = titles.get(e.uri); }
-                Cart c = Cart.read(getContentResolver(), e.uri);
+                Cart c = cartOf(e);
                 if (c != null) readCarts.put(e.uri, c);
                 read.put(e.uri, title != null ? title : c != null && !c.title.isEmpty() ? c.title : null);
             }
@@ -846,11 +873,13 @@ public class MainActivity extends Activity {
         }
         /* CHGame originals first, then ports; in each, by the chosen sort (name, most played, newest file) */
         String sort = Options.sort(prefs);
+        Map<Files.Entry, Long> playedMs = new HashMap<>();
+        if ("played".equals(sort)) for (Files.Entry e : games) playedMs.put(e, Stats.time(this, fileName(e)));
         Collections.sort(games, (a, b) -> {
             int s = Boolean.compare(isPort(a), isPort(b));
             if (s != 0) return s;
             if ("played".equals(sort)) {
-                int k = Long.compare(Stats.time(this, fileName(b)), Stats.time(this, fileName(a)));
+                int k = Long.compare(playedMs.get(b), playedMs.get(a));
                 if (k != 0) return k;
             } else if ("added".equals(sort)) {
                 int k = Long.compare(b.modified, a.modified);
@@ -927,16 +956,13 @@ public class MainActivity extends Activity {
     /** The files (upper case) that make up "Board and card games": bateske's casino-style set. */
     private static final Set<String> BOARD_CARD = new HashSet<>(Arrays.asList(
         "CHCHESS.CHG",
-        "CHCHESS.CHG",
         "CHBLACKJ.CHG",
         "CHBLACKJACK.CHG",
-        "CHPOKER.CHG",
         "CHPOKER.CHG",
         "CHMAHJON.CHG",
         "CHMAHJONG.CHG",
         "CHROULET.CHG",
         "CHROULETTE.CHG",
-        "CHCRAPS.CHG",
         "CHCRAPS.CHG",
         "CHBOARDW.CHG",
         "CHBOARDWALK.CHG",
@@ -947,20 +973,14 @@ public class MainActivity extends Activity {
         "CHCHECKE.CHG",
         "CHCHECKERS.CHG",
         "CHYACHT.CHG",
-        "CHYACHT.CHG",
-        "CHFOUR.CHG",
         "CHFOUR.CHG",
         "CHTICTAC.CHG",
         "CHTICTACTOE.CHG",
         "CHSNAKES.CHG",
-        "CHSNAKES.CHG",
         "CHSLOTS.CHG",
-        "CHSLOTS.CHG",
-        "CHBINGO.CHG",
         "CHBINGO.CHG",
         "CHDOMINO.CHG",
         "CHDOMINOES.CHG",
-        "CHWORDS.CHG",
         "CHWORDS.CHG",
         "CHCROSSW.CHG",
         "CHCROSSWORD.CHG",
@@ -1157,15 +1177,18 @@ public class MainActivity extends Activity {
 
     /** L2 (dir -1) or R2 (dir 1): to the first game of the previous or next letter. */
     private void jumpLetter(int dir) {
-        if (shown < 0 || games.isEmpty()) return;
+        /* in the order the rows show (favourites, last played, groups), over the rows shown (a closed group's games
+           are not rows, so never a target) */
+        if (shown < 0 || shownRow < 0 || rows.isEmpty()) return;
         char from = letterOf(shown);
-        int j = shown + dir;
-        while (j >= 0 && j < games.size() && letterOf(j) == from) j += dir;
-        if (j < 0 || j >= games.size()) return;
-        char to = letterOf(j);
-        /* going back, step to the first game of that letter, not its last */
-        while (j - dir >= 0 && j - dir < games.size() && letterOf(j - dir) == to) j -= dir;
-        goTo(j);
+        int r = shownRow + dir;
+        while (r >= 0 && r < rows.size() && (gameAt(r) < 0 || letterOf(gameAt(r)) == from)) r += dir;
+        if (r < 0 || r >= rows.size()) return;
+        char to = letterOf(gameAt(r));
+        /* going back, step to the first game of that letter (in this run of rows), not its last */
+        if (dir < 0) while (r - 1 >= 0 && gameAt(r - 1) >= 0 && letterOf(gameAt(r - 1)) == to) r--;
+        list.setSelectionFromTop(r, headerAbove(r) ? Ui.dp(this, 40) : 0);
+        select(gameAt(r), r);
     }
 
     /** D-pad left (dir -1) or right (dir 1): up or down a page of rows, onto the nearest game. */
@@ -1259,6 +1282,15 @@ public class MainActivity extends Activity {
         return e.path.substring(e.path.lastIndexOf('/') + 1);
     }
 
+    /** The header's version; with none there, the version it was installed at, else the release it matches. */
+    private String shownVersion(Files.Entry e, Cart c) {
+        if (!c.version.isEmpty()) return c.version;
+        String key = fileName(e).toUpperCase(Locale.ROOT), got = prefs.getString("got:" + key, null);
+        if (got != null && got.isEmpty()) got = null;
+        /* only what is known: an update pending means the installed version is unknown, so none is shown */
+        return got != null ? got.replaceFirst("^[vV]", "") : prefs.contains("upd:" + key) ? "" : prefs.getString("ver:" + key, "");
+    }
+
     /** "author · v1.0", once the cart has been read. */
     private String details(Files.Entry e) {
         if (isNew(e)) { JSONObject n = newInfo(e); return "New · by " + (n == null ? "GitHub" : n.optString("author", n.optString("owner"))); }
@@ -1266,7 +1298,8 @@ public class MainActivity extends Activity {
         StringBuilder s = new StringBuilder();
         if (c != null) {
             s.append(c.credit().isEmpty() ? Updates.owner(prefs, fileName(e)) : c.credit());
-            if (!c.version.isEmpty()) s.append(s.length() > 0 ? " · " : "").append("v").append(c.version);
+            String ver = shownVersion(e, c);
+            if (!ver.isEmpty()) s.append(s.length() > 0 ? " · " : "").append("v").append(ver);
             if (c.portedFrom != null) s.append(s.length() > 0 ? " · " : "").append(c.portedFrom);
         }
         String t = Stats.duration(Stats.time(this, fileName(e)));
@@ -1280,8 +1313,10 @@ public class MainActivity extends Activity {
         Cart c = carts.get(e.uri);
         if (c == null && !loading.contains(e.uri)) {
             loading.add(e.uri);
-            reader.execute(() -> {
-                Cart read = Cart.read(getContentResolver(), e.uri);
+            readerRun(() -> {
+                Cart r0 = null;
+                try { r0 = Cart.read(getContentResolver(), e.uri); } catch (RuntimeException ignored) { }
+                final Cart read = r0;
                 runOnUiThread(() -> {
                     if (isFinishing()) return;
                     if (read != null) carts.put(e.uri, read);
@@ -1303,12 +1338,27 @@ public class MainActivity extends Activity {
         Bitmap shot = shotPic(fileName(e));
         if (shot != null) return shot;
         String base = Saves.base(fileName(e)), m = prefs.getString("mediaTree", null);
-        if (m == null) return card(displayTitle(e));
+        if (m == null || snapNone.contains(base)) {     /* no ES-DE screenshot: a frame of the game itself (ranPic) */
+            if (m != null && snapTried.add(base)) readerRun(() -> {        /* made by the media maker since? */
+                Bitmap got = SnapMaker.shot(getContentResolver(), Uri.parse(m), base);
+                if (got != null) runOnUiThread(() -> {
+                    if (isFinishing()) return;
+                    snaps.put(base, got);
+                    snapNone.remove(base);
+                    rowsChanged();
+                });
+            });
+            Bitmap ran = ranPic(e);
+            return ran != null ? ran : card(displayTitle(e));
+        }
         Bitmap b = snaps.get(base);
         if (b == null && snapTried.add(base)) {
-            reader.execute(() -> {
+            readerRun(() -> {
                 Bitmap got = SnapMaker.shot(getContentResolver(), Uri.parse(m), base);
-                if (got == null) return;
+                if (got == null) {
+                    runOnUiThread(() -> { if (!isFinishing()) { snapNone.add(base); rowsChanged(); } });
+                    return;
+                }
                 runOnUiThread(() -> {
                     if (isFinishing()) return;
                     snaps.put(base, got);
@@ -1335,6 +1385,56 @@ public class MainActivity extends Activity {
         } catch (Exception ignored) { }
         shotPics.put(file, b);
         return b;
+    }
+
+    private final Set<String> ranTried = java.util.Collections.synchronizedSet(new java.util.HashSet<>());
+    private final Set<String> snapNone = new java.util.HashSet<>();      /* games with no ES-DE screenshot (UI thread) */
+    /* the runs for pictures: not on reader, which reads every row's cart */
+    private final ExecutorService runner = Executors.newSingleThreadExecutor();
+
+    /** An installed game with no picture anywhere (poevoid's Astarok): run once in the background, a frame kept in the cache. */
+    private Bitmap ranPic(Files.Entry e) {
+        String file = fileName(e);
+        java.io.File shot = new java.io.File(getCacheDir(), "runshot3-" + file.replaceAll("[^\\w.-]", "_")
+                + "-" + e.size + "-" + e.modified + ".png");        /* by size and date: an updated game gets a new picture */
+        String key = "run:" + shot.getName();
+        if (shotPics.containsKey(key)) return shotPics.get(key);
+        if (shot.length() > 0) {
+            Bitmap b = android.graphics.BitmapFactory.decodeFile(shot.getPath());
+            if (b != null) { shotPics.put(key, b); return b; }
+            shot.delete();      /* unreadable: made again */
+        }
+        if (!ranTried.add(shot.getName())) return null;       /* this version tried this session; one that drew nothing is tried again next time */
+        runner.execute(() -> {
+            java.io.File game = null;
+            try {
+                game = java.io.File.createTempFile("rangame", ".chg", getCacheDir());
+                try (java.io.InputStream in = getContentResolver().openInputStream(e.uri);
+                     java.io.FileOutputStream o = new java.io.FileOutputStream(game)) {
+                    byte[] buf = new byte[1 << 16];
+                    for (int r; (r = in.read(buf)) > 0; ) o.write(buf, 0, r);
+                }
+                Bitmap b;
+                synchronized (Preview.CORE) { b = Preview.busy() ? null : SnapMaker.frame(this, game, file, () -> Preview.busy() || Thread.currentThread().isInterrupted(), true); }
+                if (b == null) { if (Preview.busy()) ranTried.remove(shot.getName()); return; }
+                try (java.io.FileOutputStream o = new java.io.FileOutputStream(shot)) { b.compress(Bitmap.CompressFormat.PNG, 100, o); }
+                String stem = "runshot3-" + file.replaceAll("[^\\w.-]", "_") + "-";
+                java.io.File[] old = getCacheDir().listFiles();        /* this game's frames of older versions, and 1.80's runshot2 */
+                if (old != null) for (java.io.File o : old)
+                    if (!o.equals(shot) && (o.getName().startsWith(stem) || o.getName().startsWith("runshot2-"))) o.delete();
+                runOnUiThread(() -> {
+                    if (isFinishing()) return;
+                    shotPics.put(key, b);
+                    rowsChanged();
+                    if (shown >= 0 && shown < games.size() && fileName(games.get(shown)).equals(file)) showSelected();
+                });
+            } catch (Exception ex) {
+                ranTried.remove(shot.getName());
+            } finally {
+                if (game != null) game.delete();
+            }
+        });
+        return null;
     }
 
     /** A plain 128x64 card with the game's name, for a game with no cart picture. */
@@ -1377,7 +1477,7 @@ public class MainActivity extends Activity {
         Bitmap b = newPics.get(repo);
         if (b != null || !newPicTried.add(repo)) return b;
         final String title = displayTitle(e);
-        reader.execute(() -> {
+        readerRun(() -> {
             byte[] block = null;
             java.io.File cache = new java.io.File(getCacheDir(), "newpic-" + repo.replace('/', '_') + ".bin");
             try {
@@ -1407,7 +1507,7 @@ public class MainActivity extends Activity {
             if (decoded != null) { newPicDone(repo, decoded); return; }
             if (shooter.isShutdown()) return;
             try { shooter.execute(() -> {         /* none in the release: download the game and take a frame */
-                if (Preview.gameRunning) { newPicTried.remove(repo); return; }      /* a game is playing: later */
+                if (Preview.busy()) { newPicTried.remove(repo); return; }      /* a game is playing: later */
                 Bitmap g = generatedPic(n, repo);
                 if (g == null && !newPicTried.contains(repo)) return;       /* cut short or no network: try again later */
                 newPicDone(repo, g != null ? g : card(title));      /* still none: a plain card with the name */
@@ -1474,9 +1574,9 @@ public class MainActivity extends Activity {
             if (d == null) return null;
             try (java.io.FileOutputStream o = new java.io.FileOutputStream(game)) { o.write(d); }
             Bitmap b;
-            synchronized (Preview.CORE) { b = Preview.gameRunning ? null : SnapMaker.frame(this, game, "NEWGAME.CHG", () -> Preview.gameRunning); }
+            synchronized (Preview.CORE) { b = Preview.busy() ? null : SnapMaker.frame(this, game, "NEWGAME.CHG", () -> Preview.busy()); }
             if (b == null) {
-                if (!Preview.gameRunning) new java.io.FileOutputStream(shot).close();      /* never drew (not just cut short by a game starting) */
+                if (!Preview.busy()) new java.io.FileOutputStream(shot).close();      /* never drew (not just cut short by a game starting) */
                 else newPicTried.remove(repo);
                 return null;
             }
@@ -1553,14 +1653,7 @@ public class MainActivity extends Activity {
         StringBuilder d = new StringBuilder();
         if (c != null) {
             if (!c.credit().isEmpty()) d.append("by ").append(c.credit());
-            String ver = c.version;
-            if (ver.isEmpty()) {      /* none in the header: the version it was installed at, else the release it matches */
-                String key = fileName(e).toUpperCase(Locale.ROOT), got = prefs.getString("got:" + key, null);
-                if (got != null && got.isEmpty()) got = null;
-                String latest = prefs.getString("ver:" + key, "");
-                /* only what is known: an update pending means the installed version is unknown, so none is shown */
-                ver = got != null ? got.replaceFirst("^[vV]", "") : prefs.contains("upd:" + key) ? "" : latest;
-            }
+            String ver = shownVersion(e, c);
             if (!ver.isEmpty()) d.append(d.length() > 0 ? " · " : "").append("v").append(ver);
         }
         if (hidden.contains(e.path)) d.append(d.length() > 0 ? " · " : "").append("Hidden");
@@ -1629,6 +1722,7 @@ public class MainActivity extends Activity {
                 artUpdate.setText(was);
                 if (isFinishing()) return;
                 carts.remove(e.uri);
+                cartCache.remove(e.uri);
                 Saves.toast(this, err == null ? displayTitle(e) + " updated" : "Could not update: " + err);
                 playNow(e);        /* the list refreshes in onResume when the game closes */
             });
@@ -1637,53 +1731,62 @@ public class MainActivity extends Activity {
 
     private void playNow(Files.Entry e) {
         /* a game that names card files not in the games folder: say so, and let the player start anyway */
-        Cart c = carts.get(e.uri);
-        if (c == null) {
-            try { c = Cart.read(getContentResolver(), e.uri); } catch (Exception ignored) { }
-        }
-        final Cart cart0 = c;
+        final Cart known = carts.get(e.uri);
         final String fn0 = fileName(e);
         if (syncing) { Saves.toast(this, "Updating… please wait"); return; }   /* a second tap while files are fetched */
         syncing = true;
         final Uri uri0 = e.uri;
-        new Thread(() -> {      /* the card files the game needs, fetched first if missing */
+        new Thread(() -> {      /* the cart, the card files it needs (fetched first if missing), then what is still missing:
+                                   all off the screen's thread (the folder may be slow) */
+            List<String> missing = new ArrayList<>();
+            Cart cart = known;
             try {
+                if (cart == null) {
+                    try { cart = Cart.read(getContentResolver(), uri0); } catch (Exception ignored) { }
+                }
                 Uri t = tree();
-                if (t != null) Updates.syncData(this, prefs, t, fn0, cart0 == null ? null : cart0.dats);
+                if (t != null) Updates.syncData(this, prefs, t, fn0, cart == null ? null : cart.dats);
+                missing = missingDats(cart, fn0);
+            } catch (RuntimeException ignored) {
+                /* the check could not be made: the game starts as it did before the check existed */
             } finally {
+                final List<String> gone = missing;
                 runOnUiThread(() -> {
                     syncing = false;
                     if (isFinishing()) return;
-                    for (int i = 0; i < games.size(); i++) if (games.get(i).uri.equals(uri0)) { playChecked(i, cart0); break; }
+                    for (int i = 0; i < games.size(); i++) if (games.get(i).uri.equals(uri0)) { playChecked(i, gone); break; }
                 });
             }
         }).start();
     }
 
     private boolean syncing;
+    /** New games being installed (their list paths; UI thread only): one install each at a time. */
+    private final java.util.Set<String> installing = new java.util.HashSet<>();
 
-    private void playChecked(int pos, Cart c) {
+    /** Starts the game at pos, or first says which card files are missing (worked out on playNow's thread). */
+    private void playChecked(int pos, List<String> missing) {
         if (pos < 0 || pos >= games.size()) return;
         Files.Entry e = games.get(pos);
-        List<String> missing = missingDats(c);
         if (missing.isEmpty()) {
             start(pos);
             return;
         }
         new CardDialog.Builder(this)
-                .setTitle("Missing card file")
-                .setMessage(displayTitle(e) + " needs " + TextUtils.join(", ", missing)
-                        + " on the SD card. Put it in the games folder.")
-                .setPositiveButton("Start anyway", (d, w) -> start(pos))
+                .setTitle(missing.size() == 1 ? "Missing card file" : "Missing card files")
+                .setMessage(displayTitle(e) + " needs " + (missing.size() == 1 ? "this file" : "these files") + " on the SD card:\n\n"
+                        + TextUtils.join("\n", missing) + "\n\nPut " + (missing.size() == 1 ? "it" : "them") + " in the games folder.")
+                .setPositiveButton("Start anyway", (d, w) -> startEntry(e))
                 .setNegativeButton("Cancel", null)
                 .show();
     }
 
     /** Starts the game at pos. */
-    private void start(int pos) {
+    private void start(int pos) { startEntry(games.get(pos)); }
+
+    private void startEntry(Files.Entry e) {
         preview.stop();
         previewing = false;
-        Files.Entry e = games.get(pos);
         prefs.edit().putString("lastPath", e.path).apply();
         Intent i = new Intent(this, GameActivity.class);
         i.putExtra("game", e.uri.toString());
@@ -1693,17 +1796,37 @@ public class MainActivity extends Activity {
     }
 
     /** The card files a game names that are not in the games folder (the app's SD card). */
-    List<String> missingDats(Cart c) {
+    /** The card files a game needs: the release's (Updates.sdFiles) and the ones its CHG names, upper case, folder paths kept. */
+    static Set<String> neededFiles(SharedPreferences prefs, Cart c, String file) {
+        Set<String> need = new java.util.LinkedHashSet<>();
+        for (String n : Updates.sdFiles(prefs, file)) need.add(n.toUpperCase(Locale.ROOT));
+        if (c != null) need.addAll(c.dats);
+        return need;
+    }
+
+    /** Which of these files are not in the games folder (one listing of it): a path must match whole, a bare name anywhere. */
+    static List<String> missingFrom(android.content.ContentResolver cr, Uri tree, Set<String> need, Set<String> extraHave) {
+        if (need.isEmpty()) return new ArrayList<>();
+        return missingFrom(tree == null ? new ArrayList<>() : Files.list(cr, tree), need, extraHave);
+    }
+
+    /** The same, against a listing already read. */
+    static List<String> missingFrom(List<Files.Entry> all, Set<String> need, Set<String> extraHave) {
         List<String> missing = new ArrayList<>();
-        if (c == null || c.dats.isEmpty()) return missing;
-        Set<String> have = new HashSet<>();
-        Uri t = tree();
-        if (t != null)
-            for (Files.Entry f : Files.list(getContentResolver(), t))
-                have.add(f.path.substring(f.path.lastIndexOf('/') + 1).toUpperCase(Locale.ROOT));
-        for (String d : c.dats)
+        Set<String> have = new HashSet<>(extraHave);
+        for (Files.Entry f : all) {
+            if (f.path.startsWith(Saves.BACKUP + "/")) continue;     /* backed-up saves are not the card's files */
+            String p = f.path.toUpperCase(Locale.ROOT);
+            have.add(p);
+            have.add(p.substring(p.lastIndexOf('/') + 1));
+        }
+        for (String d : need)
             if (!have.contains(d)) missing.add(d);
         return missing;
+    }
+
+    List<String> missingDats(Cart c, String file) {
+        return missingFrom(getContentResolver(), tree(), neededFiles(prefs, c, file), new HashSet<>());
     }
 
     private void openOptions() {
@@ -1744,49 +1867,23 @@ public class MainActivity extends Activity {
                 .putExtra("port", isPort(e)));
     }
 
-    /** What can be done with this game (the menu: long press is now the settings page). */
-    private void gameMenu(int pos, int row) {
-        select(pos, row);
-        Files.Entry e = games.get(pos);
-        boolean fav = favs.contains(e.path), hid = hidden.contains(e.path);
-        String[] upd = isNew(e) ? null : Updates.pending(prefs, fileName(e));
-        List<String> items = new ArrayList<>(java.util.Arrays.asList("Play", fav ? "Remove from favourites" : "★ Add to favourites",
-                hid ? "Show in the list again" : "Hide", "Saves…", "Game settings…", "About this game"));
-        if (upd != null) items.add(1, "Update to " + upd[0]);
-        final int u = upd != null ? 1 : 0;      /* the Update row shifts the others down by one */
-        new CardDialog.Builder(this)
-                .setTitle(displayTitle(e))
-                .setItems(items.toArray(new String[0]), (d, which) -> {
-                    if (u == 1 && which == 1) { updateSelected(); return; }
-                    if (which > 1) which -= u;
-                    if (which == 0) play(pos);
-                    else if (which == 1) toggleFavourite(pos);
-                    else if (which == 2) toggleHidden(pos);
-                    else if (which == 3) startActivity(new Intent(this, SavesActivity.class)
-                            .putExtra("file", fileName(e)).putExtra("path", e.path).putExtra("title", displayTitle(e)));
-                    else if (which == 4) startActivity(new Intent(this, GameSettingsActivity.class)
-                            .putExtra("file", fileName(e)).putExtra("path", e.path).putExtra("title", displayTitle(e)));
-                    else about(e);
-                })
-                .show();
-    }
-
     /** Everything the app knows about a game: its credits, record, file and play time. */
     private void about(Files.Entry e) {
         Cart c = cart(e);
         StringBuilder s = new StringBuilder();
         if (c != null) {
             if (!c.credit().isEmpty()) s.append("By ").append(c.credit()).append("\n");
-            if (!c.version.isEmpty()) s.append("Version ").append(c.version).append("\n");
+            if (!shownVersion(e, c).isEmpty()) s.append("Version ").append(shownVersion(e, c)).append("\n");
             if (c.portedFrom != null) s.append(c.portedFrom).append(" port").append(c.porter != null ? ", ported to CHGame by " + c.porter : "").append("\n");
             if (c.description != null && !c.description.isEmpty()) s.append("\n").append(c.description).append("\n");
             if (c.license != null && !c.license.isEmpty()) s.append("\nLicence: ").append(c.license).append("\n");
             s.append(c.picture != null ? "\nHas a cartridge picture" : "\nNo cartridge picture").append("\n");
-            if (!c.dats.isEmpty()) {
-                /* the card files it names, against what is in the games folder */
-                List<String> missing = missingDats(c);
+            Set<String> need = neededFiles(prefs, c, fileName(e));
+            if (!need.isEmpty()) {
+                /* the card files it needs, against what is in the games folder */
+                List<String> missing = missingFrom(getContentResolver(), tree(), need, new HashSet<>());
                 s.append("\nNeeds on the SD card:");
-                for (String d : c.dats)
+                for (String d : need)
                     s.append("\n  ").append(d).append(!missing.contains(d) ? "  \u2713 in the games folder" : "  \u2717 MISSING: put it in the games folder");
                 s.append("\n");
             }
@@ -2256,6 +2353,7 @@ public class MainActivity extends Activity {
             if (bmp != null) {
                 if (old != null) {
                     paint.setAlpha(255);
+                    src.set(0, 0, old.getWidth(), old.getHeight());     /* its own size: the two may differ */
                     c.drawBitmap(old, src, dst, paint);
                 }
                 paint.setAlpha(old != null ? (int) (255 * t) : 255);

@@ -27,6 +27,10 @@ bool fe_screen_ready(void);
 unsigned long long fe_sd_reads(void);
 bool fe_save_state(const char *path);
 bool fe_load_state(const char *path);
+/* the state in memory (the rewind ring): its size, a copy into buf (n bytes), and back from n bytes */
+size_t fe_state_size(void);
+bool fe_save_state_mem(void *buf, size_t n);
+bool fe_load_state_mem(const void *buf, size_t n);
 void fe_stop(void);
 
 #endif

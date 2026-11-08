@@ -91,7 +91,7 @@ final class Cart {
         if (n < HEADER || head[0] != 'C' || head[1] != 'H' || head[2] != 'G' || head[3] != '1') return null;
         String title = text(head, 0x20, 32), author = text(head, 0x40, 16), version = text(head, 0x50, 16);
         String fullAuthor = null, from = null, porter = null;
-        JSONObject game = record(head, n);
+        JSONObject rec = record(head, n), game = rec == null ? null : rec.optJSONObject("game");
         if (game != null) {
             fullAuthor = game.optString("author", null);
             /* "PICO-8 port: Celeste 2 by EXOK Games, ported to CHGame by Jadflat." */
@@ -102,7 +102,26 @@ final class Cart {
         int payload = u32(head, 0x10);
         Matcher dm = DAT.matcher(new String(head, HEADER, Math.max(0, Math.min(payload, n - HEADER)),
                 StandardCharsets.ISO_8859_1));
-        while (dm.find()) if (!c.dats.contains(dm.group())) c.dats.add(dm.group());
+        /* the record's list of SD files (spec/chg.md, "sdcard") when it has one: any name, any path; else the
+           .DAT/.ART names the program holds (a hand-packed CHG has no record) */
+        org.json.JSONArray sd = rec == null ? null : rec.optJSONArray("sdcard");
+        if (sd != null) {
+            for (int i = 0; i < sd.length(); i++) {
+                JSONObject f = sd.optJSONObject(i);
+                String path = f == null ? "" : f.optString("path", "");
+                String name = path.toUpperCase(java.util.Locale.ROOT);       /* its path: CHCW/BONUS.CWD goes in its folder */
+                if (!name.isEmpty() && !name.endsWith("/") && !c.dats.contains(name)) c.dats.add(name);
+            }
+        } else {
+            while (dm.find()) if (!c.dats.contains(dm.group())) c.dats.add(dm.group());
+            /* the 8.3 directory form, "ASTAROK ART" or "STARLIFTDAT" (poevoid's Astarok) */
+            Matcher pm = PADDED.matcher(new String(head, HEADER, Math.max(0, Math.min(payload, n - HEADER)), StandardCharsets.ISO_8859_1));
+            while (pm.find()) {
+                if (pm.group(1).length() + pm.group(2).length() != 8) continue;
+                String name = pm.group(1) + "." + pm.group(3);
+                if (!c.dats.contains(name)) c.dats.add(name);
+            }
+        }
         if (game != null) {
             c.description = game.optString("description", null);
             c.license = game.optString("license", null);
@@ -110,10 +129,31 @@ final class Cart {
         return c;
     }
 
-    private static final Pattern DAT = Pattern.compile("(?<![A-Za-z0-9_])[A-Z0-9_]{1,8}\\.DAT(?![A-Za-z0-9])");
+    /* only .DAT/.ART: any "NAME.EXT" also catches files a game writes itself (CHSaveMan's SAVES.BK1, GAMELIST.TXT) */
+    private static final Pattern DAT = Pattern.compile("(?<![A-Za-z0-9_])[A-Z0-9_]{1,8}\\.(DAT|ART)(?![A-Za-z0-9])");
+    private static final Pattern PADDED = Pattern.compile("(?<![A-Za-z0-9_])([A-Z0-9_]{1,8})( *)(DAT|ART)(?![A-Za-z0-9])");
+
+    /** The program part of a CHG file as upper-case text, for Cart.names; "" if it is not one. */
+    static String programText(byte[] d) {
+        if (d == null || d.length < HEADER || d[0] != 'C' || d[1] != 'H' || d[2] != 'G' || d[3] != '1') return "";
+        int payload = u32(d, 0x10);
+        return new String(d, HEADER, Math.max(0, Math.min(payload, d.length - HEADER)), StandardCharsets.ISO_8859_1).toUpperCase(java.util.Locale.ROOT);
+    }
+
+    /** Whether a program's text (upper case) names this SD file: "NAME.EXT", or the 8.3 directory form "NAME    EXT" / "NAMEEXT". */
+    static boolean names(String text, String file) {
+        int dot = file.lastIndexOf('.');
+        if (dot < 0) return text.contains(file);
+        String base = file.substring(0, dot), ext = file.substring(dot + 1);
+        if (text.contains(file)) return true;
+        StringBuilder pad = new StringBuilder(base);
+        while (pad.length() < 8) pad.append(' ');
+        return text.contains(pad + ext) || text.contains(base + ext);
+    }
+
     private static final Pattern PORT = Pattern.compile("^(.{1,24}?) port: .*ported to CHGame by (.+?)\\.?$");
 
-    /** The record's "game" object (spec/chg.md, "The record"), or null when there is none or it fails its checks. */
+    /** The record (its "game" object and "sdcard" list) (spec/chg.md, "The record"), or null when there is none or it fails its checks. */
     private static JSONObject record(byte[] d, int n) {
         int at = u32(d, 0x6C), size = u32(d, 0x70);
         if (at <= 0 || size <= 0 || size > RECORD_MAX || at % 512 != 0 || at > n - size) return null;
@@ -123,7 +163,7 @@ final class Cart {
         if (crc.getValue() != want) return null;
         try {
             JSONObject r = new JSONObject(new String(d, at, size, StandardCharsets.UTF_8));
-            return r.optInt("chgRecord") == 1 ? r.optJSONObject("game") : null;
+            return r.optInt("chgRecord") == 1 && r.optJSONObject("game") != null ? r : null;
         } catch (JSONException e) {
             return null;
         }

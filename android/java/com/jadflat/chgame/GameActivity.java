@@ -49,6 +49,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     private volatile SurfaceHolder holder;
     private volatile int keys, stick;       /* Native.* bits from buttons, and from the sticks */
     private volatile int pressed;           /* pressed lately: a quick tap is held for TAP_FRAMES, */
+    private final Object tapLock = new Object();
     private int tapFrames;                  /* so a game reading its buttons at 30 fps still sees it */
     private static final int TAP_FRAMES = 3;
     private volatile boolean fast;          /* fast-forward held */
@@ -87,6 +88,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     private int speedFrames;                /* frames, and time in Native.frame, since the last speed line */
     private long speedNanos, speedSince, speedLogged;
     private volatile long frameAt;          /* System.nanoTime() when Native.frame last returned */
+    private volatile long coreAt;           /* when the loop entered Native.frame; 0 while it is outside one */
     private final Handler watch = new Handler(Looper.getMainLooper());   /* the hang check (UI thread) */
     private final Runnable watchdog = this::watchdogTick;
     private static final long HANG_NANOS = 3000000000L;    /* no frame for this long: the game stopped */
@@ -110,17 +112,16 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         view.setDefaultFocusHighlightEnabled(false);
         view.getHolder().addCallback(this);
         view.setOnTouchListener((v, ev) -> { lastTapX = ev.getX(); lastTapY = ev.getY(); return false; });
-        view.setOnClickListener(v -> {
-            if (portrait()) {       /* only the picture itself: the black around it does nothing */
-                int side = pictureSide(v.getWidth(), v.getHeight());
-                float x0 = (v.getWidth() - side) / 2f;
-                if (lastTapY < side && lastTapX >= x0 && lastTapX < x0 + side) menu();
-            } else if (touch.getVisibility() != View.VISIBLE
-                    && lastTapX > v.getWidth() * 0.35f && lastTapX < v.getWidth() * 0.65f
-                    && lastTapY < v.getHeight() * 0.15f) menu();   /* top centre only */
-        });   /* landscape with the touch pad: top centre only */
+        view.setOnClickListener(v -> tapAt(v, lastTapX, lastTapY));
         touch = new TouchControls(this);
         touch.setOnMenu(this::menu);        /* the pad's MENU button */
+        touch.setOnTap((x, y) -> {          /* the pad keeps every gesture: its taps off the controls, as the game's */
+            int[] a = new int[2], b = new int[2];
+            touch.getLocationOnScreen(a);
+            view.getLocationOnScreen(b);
+            float vx = x + a[0] - b[0], vy = y + a[1] - b[1];
+            if (vx >= 0 && vy >= 0 && vx < view.getWidth() && vy < view.getHeight()) tapAt(view, vx, vy);
+        });
         FrameLayout frame = new FrameLayout(this);
         frame.addView(view);
         frame.addView(touch);
@@ -162,7 +163,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
 
         /* the card and the game are copied off the UI thread; then the loop starts. The core is
            the list's preview's until it lets go (Preview.CORE) */
-        Preview.gameRunning = true;
+        Preview.gameActive = true;
         new Thread(() -> {
             String err = null;
             synchronized (Preview.CORE) {
@@ -182,6 +183,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
                 clearRewind();      /* a new run starts with an empty ring */
                 Options.apply(getSharedPreferences(MainActivity.PREFS, MODE_PRIVATE), name);
                 if (!coreIdle()) throw new java.io.IOException("the last game is still stuck in a frame");
+                if (isDestroyed()) throw new java.io.IOException("left");
                 if (!Native.start(g.getPath(), new File(getFilesDir(), "sys").getPath(), saves.getPath(),
                         new File(getFilesDir(), "log.txt").getPath()))
                     err = "This game would not start.";
@@ -191,8 +193,16 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
             }
             final String msg = err;
             runOnUiThread(() -> {
-                if (isFinishing() || isDestroyed()) return;   /* quit while loading: nothing to start */
+                if (isFinishing() || isDestroyed()) {   /* quit while loading: nothing to start */
+                    if (msg == null && (current == null || current == this)) {
+                        Native.stop();
+                        Preview.gameActive = false;
+                        if (current == this) current = null;
+                    }
+                    return;
+                }
                 if (msg != null) {
+                    if (current == null || current == this) Preview.gameActive = false;     /* a stuck core (Reset) must not keep the list's preview off */
                     Toast.makeText(this, msg, Toast.LENGTH_LONG).show();
                     finish();
                     return;
@@ -304,22 +314,44 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     }
 
     private void continueFrom(File f) {
-        if (!Native.loadState(f.getPath())) {
-            Saves.deleteState(f);       /* another build's, or damaged: it would be offered again */
-            toast("The resume point could not be loaded (another version, or damaged); starting fresh");
+        if (Native.loadState(f.getPath()) || Native.loadState(f.getPath())) return;     /* twice: a moment's trouble */
+        /* another build's, or damaged: moved aside (not deleted), so it is not offered again and nothing is lost */
+        File aside = new File(f.getPath() + ".unloadable");
+        aside.delete();
+        if (!f.renameTo(aside)) Saves.deleteState(f);
+        toast("The resume point could not be loaded (another version, or damaged); starting fresh");
+    }
+
+    /** A state written whole to f or not at all: through <f><tmp>, on the disk, then renamed over f (the old state stays
+        if anything fails). The game is paused. */
+    private static boolean saveStateTo(File f, String tmpSuffix) {
+        File tmp = new File(f.getPath() + tmpSuffix);
+        try {
+            if (!Native.saveState(tmp.getPath())) return false;
+            Files.syncFile(tmp);
+            Files.replaceWith(tmp, f);
+            return true;
+        } catch (java.io.IOException e) {
+            return false;
+        } finally {
+            tmp.delete();       /* gone after the rename; left over only if something failed */
         }
+    }
+
+    /** "Loaded", "is empty" or "could not be loaded", for a slot. */
+    private static String loadSlot(File f, int slot) {
+        if (!f.isFile()) return "Slot " + slot + " is empty";
+        return Native.loadState(f.getPath()) ? "Loaded slot " + slot
+                : "Slot " + slot + " could not be loaded (another version, or damaged)";
     }
 
     /** On leaving (or going to the background): the resume point. */
     private void writeResumePoint() {
         if (!autosave || skipResume) return;
         try {
-            File f = Saves.autoFile(this, name);
-            File tmp = new File(f.getPath() + ".tmp");
-            if (Native.saveState(tmp.getPath()) && !tmp.renameTo(f)) {
-                f.delete();
-                tmp.renameTo(f);
-            }
+            /* its own temporary name (a restore writes <f>.tmp): no lock, so leaving the game never waits on a restore;
+               whichever finishes last is the resume point, each one whole */
+            saveStateTo(Saves.autoFile(this, name), ".resume.tmp");
         } catch (java.io.IOException ignored) {
         }
     }
@@ -348,6 +380,11 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
             resumeGame();
         } else {
             pauseGame();
+            keys = 0;       /* a key-up sent to another window never arrives: nothing stays held */
+            stick = 0;
+            fast = false;
+            rewinding = false;
+            synchronized (tapLock) { pressed = 0; tapFrames = 0; }
             quitKey1Down = quitKey2Down = false;   /* a release sent to a dialog never arrives: the combo starts clean */
             quitTaken = 0;
             quitFired = false;
@@ -364,6 +401,8 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     @Override
     protected void onPause() {
         super.onPause();
+        Thread st = slotThread;
+        if (st != null) { try { st.join(8000); } catch (InterruptedException e) { Thread.currentThread().interrupt(); } }
         boolean idle = pauseGame();
         abortClip();    /* leaving the app: a clip in progress is dropped */
         if (started && idle) {
@@ -376,7 +415,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
                 /* leaving: free the core now, so the list's preview can have it */
                 Native.stop();
                 started = false;
-                Preview.gameRunning = false;
+                Preview.gameActive = false;
             }
         }
     }
@@ -391,15 +430,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     /** Touch mode "auto": the pad is hidden while a gamepad is connected (ignoring device `gone`), shown when not. */
     private void padSync(int gone) {
         if (!touchAuto) return;
-        boolean pad = false;
-        for (int id : InputDevice.getDeviceIds()) {
-            if (id == gone) continue;
-            InputDevice d = InputDevice.getDevice(id);
-            if (d == null || d.isVirtual()) continue;
-            int s = d.getSources();
-            if ((s & InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD
-                    || (s & InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK) pad = true;
-        }
+        boolean pad = MainActivity.hasPad(gone);
         touch.setVisibility(pad ? View.GONE : View.VISIBLE);
     }
 
@@ -416,16 +447,25 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
             exportCard();
             started = false;
         }
-        if (idle) Preview.gameRunning = false;   /* stuck: the preview must not start the core under the frame */
+        if (idle) Preview.gameActive = false;   /* stuck: the preview must not start the core under the frame */
     }
+
+    /** Copies back to the games folder: on a thread of its own (a slow folder never holds up leaving the game), one at
+        a time; the next game's card import waits for it (Files.IMPORT). */
+    private static final java.util.concurrent.ExecutorService EXPORT = java.util.concurrent.Executors.newSingleThreadExecutor();
 
     private void exportCard() {
         if (tree == null || stamps == null) return;
-        try {
-            Files.exportCard(this, tree, stamps);
-        } catch (Exception e) {
-            /* the folder went away or is read-only: the private copy keeps the files */
-        }
+        android.content.Context app = getApplicationContext();
+        Uri t = tree;
+        java.util.Map<String, Long> s = stamps;
+        EXPORT.execute(() -> {
+            try {
+                Files.exportCard(app, t, s);
+            } catch (Exception e) {
+                /* the folder went away or is read-only: the private copy keeps the files */
+            }
+        });
     }
 
     private synchronized void resumeGame() {
@@ -437,7 +477,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         }
         running = true;
         runSince = android.os.SystemClock.elapsedRealtime();
-        thread = new Thread(this::loop, "chgame");
+        thread = new Thread(this::loopSafe, "chgame");
         thread.setPriority(Thread.MAX_PRIORITY);
         thread.start();
         frameAt = System.nanoTime();
@@ -475,11 +515,21 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         return coreIdle();
     }
 
+    /** loop(), but a failure to open the sound (or any other error) ends the run with a message, not a frozen screen. */
+    private void loopSafe() {
+        try {
+            loop();
+        } catch (RuntimeException e) {
+            running = false;
+            runOnUiThread(() -> { if (!isDestroyed()) Toast.makeText(this, "The game stopped: " + e, Toast.LENGTH_LONG).show(); });
+        }
+    }
+
     private void loop() {
         int min = AudioTrack.getMinBufferSize(RATE, AudioFormat.CHANNEL_OUT_STEREO, AudioFormat.ENCODING_PCM_16BIT);
         String ab = Options.audioBuffer(getSharedPreferences(MainActivity.PREFS, MODE_PRIVATE));
         int normal = Math.max(min, 800 * 4 * 4);    /* the buffer as it was */
-        int size = "low".equals(ab) ? min : "high".equals(ab) ? normal * 2 : normal;
+        int size = "low".equals(ab) && min > 0 ? min : "high".equals(ab) ? normal * 2 : normal;
         AudioTrack track = new AudioTrack.Builder()
                 .setAudioAttributes(new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_GAME)
                         .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build())
@@ -528,9 +578,11 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         speed.setColor(Color.WHITE);
         speed.setShadowLayer(2 * dp, dp, dp, Color.BLACK);
         Rect src = new Rect(0, 0, 128, 128);
+        Rect dst = new Rect();
         short[] silence = new short[800 * 2];   /* a frame's silence: paces the loop while rewinding */
         boolean was = false;                    /* rewinding in the last loop */
         int wait = 0;                           /* rewinding: frames until the next state back */
+        try {
         while (running) {
             speedTick();
             boolean back = rewinding;
@@ -547,10 +599,13 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
                 if (rewindSteps > 0) rewindCommit();    /* let go: play on from the state loaded */
                 /* fast-forward: several frames for each one shown, and only the last one's sound */
                 for (int k = fast ? FAST_SPEED : 1; k > 0; k--) {
-                    int tap = pressed;
-                    if (tap != 0 && ++tapFrames >= TAP_FRAMES) {
-                        pressed = 0;
-                        tapFrames = 0;
+                    int tap;
+                    synchronized (tapLock) {
+                        tap = pressed;
+                        if (tap != 0 && ++tapFrames >= TAP_FRAMES) {
+                            pressed = 0;
+                            tapFrames = 0;
+                        }
                     }
                     n = timedFrame(keys | stick | tap | padBits(), px, sound);
                     if (++rewindTick >= REWIND_EVERY) {
@@ -578,7 +633,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
                 shown = ghost;
             }
             bmp.setPixels(shown, 0, 128, 0, 0, 128, 128);
-            System.arraycopy(px, 0, screen, 0, px.length);
+            synchronized (screen) { System.arraycopy(px, 0, screen, 0, px.length); }
             if (clipOn) clipFrame();
             SurfaceHolder h = holder;
             Canvas c = h == null ? null : h.lockCanvas();
@@ -588,7 +643,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
                 int side = pictureSide(c.getWidth(), c.getHeight());
                 int x = (c.getWidth() - side) / 2, y = portrait() ? 0 : (c.getHeight() - side) / 2;
                 c.drawColor(Color.BLACK);
-                Rect dst = new Rect(x, y, x + side, y + side);
+                dst.set(x, y, x + side, y + side);
                 c.drawBitmap(bmp, src, dst, paint);
                 if (crt) c.drawBitmap(bmp, src, dst, glow);
                 if (grid && side >= 128 * 3) {
@@ -606,18 +661,30 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
                     c.drawText(speedText, 6 * dp, 6 * dp + speed.getTextSize(), speed);
                 h.unlockCanvasAndPost(c);
             }
-            if (n > 0) track.write(sound, 0, n * 2);    /* blocks: the pace of the game */
-            else if (back) track.write(silence, 0, silence.length);
+            if (n > 0) pace(track, sound, n * 2);    /* blocks: the pace of the game */
+            else if (back) pace(track, silence, silence.length);
+        }
+        } finally {
+            try { track.stop(); } catch (IllegalStateException ignored) { }
+            track.release();
         }
         if (rewindSteps > 0) rewindCommit();    /* stopped while rewinding: keep the state loaded */
-        track.stop();
-        track.release();
+    }
+
+    /** Writes a frame's sound; the write is what paces the game, so when the output is gone (a headset
+     *  disconnected: it returns an error at once) the frame waits its 1/60 s instead. */
+    static void pace(AudioTrack track, short[] buf, int len) {
+        int w;
+        try { w = track.write(buf, 0, len); } catch (IllegalStateException e) { w = -1; }
+        if (w < 0) try { Thread.sleep(16); } catch (InterruptedException ignored) { }
     }
 
     /** Native.frame, timed for the speed line. */
     private int timedFrame(int buttons, int[] px, short[] sound) {
         long t = System.nanoTime();
+        coreAt = t;
         int n = Native.frame(Native.toCore(buttons), px, sound);
+        coreAt = 0;
         frameAt = System.nanoTime();
         speedNanos += System.nanoTime() - t;
         speedFrames++;
@@ -669,21 +736,26 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     /* Rewind: a ring of states, about 10 seconds (game thread only)      */
     /* ---------------------------------------------------------------- */
 
-    /** A new run starts with an empty ring: the last run's states go. */
-    private void clearRewind() {
-        File dir = new File(getCacheDir(), "rewind");
-        File[] old = dir.listFiles();
-        if (old != null) for (File f : old) f.delete();
-        dir.mkdirs();
-    }
+    /** The ring, in memory (no flash writes while playing): each slot's array is reused once it has one. */
+    private final byte[][] rewindRing = new byte[REWIND_RING][];
 
-    private File rewindFile(int i) {
-        return new File(getCacheDir(), "rewind/r" + ((i % REWIND_RING) + REWIND_RING) % REWIND_RING + ".st");
+    /** A new run starts with an empty ring: the last run's states go (and the old file ring, from before 2.12). */
+    private void clearRewind() {
+        java.util.Arrays.fill(rewindRing, null);
+        rewindHead = rewindCount = rewindSteps = 0;
+        File dir = new File(getCacheDir(), "rewind");
+        if (dir.exists()) new Thread(() -> {       /* the old file ring (before 2.12): off the UI thread */
+            File[] old = dir.listFiles();
+            if (old != null) for (File f : old) f.delete();
+            dir.delete();
+        }).start();
     }
 
     /** The state now goes into the ring, as the newest. */
     private void rewindPut() {
-        if (!Native.saveState(rewindFile(rewindHead).getPath())) return;
+        byte[] s = Native.saveStateBytes(rewindRing[rewindHead]);
+        if (s == null) return;
+        rewindRing[rewindHead] = s;
         rewindHead = (rewindHead + 1) % REWIND_RING;
         if (rewindCount < REWIND_RING) rewindCount++;
     }
@@ -692,7 +764,10 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     private boolean rewindBack() {
         if (rewindSteps >= rewindCount) return false;
         rewindSteps++;
-        return Native.loadState(rewindFile(rewindHead - rewindSteps).getPath());
+        byte[] s = rewindRing[((rewindHead - rewindSteps) % REWIND_RING + REWIND_RING) % REWIND_RING];
+        if (s != null && Native.loadStateBytes(s)) return true;
+        rewindCount = --rewindSteps;     /* a state that will not load is the oldest there is */
+        return false;
     }
 
     /** Rewind let go: play on from the state loaded, so the newer states are dropped. */
@@ -707,9 +782,16 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     /* ---------------------------------------------------------------- */
 
     /** The date and time for a file name: "2026-10-28 14-03-07". */
-    private static String stamp() {
-        return new java.text.SimpleDateFormat("yyyy-MM-dd HH-mm-ss", java.util.Locale.ROOT)
-                .format(new java.util.Date());
+    private static String lastStamp = "";
+    private static int sameStamp;
+
+    /** The time for a file name; a second one in the same second gets " 2", " 3"... (never the same name twice). */
+    private static synchronized String stamp() {
+        String t = new java.text.SimpleDateFormat("yyyy-MM-dd HH-mm-ss", java.util.Locale.ROOT).format(new java.util.Date());
+        if (t.equals(lastStamp)) return t + " " + (++sameStamp);
+        lastStamp = t;
+        sameStamp = 1;
+        return t;
     }
 
     /** Record clip (the menu, the game paused): the loop feeds the clip from now on. */
@@ -719,7 +801,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
             return;
         }
         if (!Native.gifBegin()) {
-            toast("Could not start the clip");
+            toast("Could not start the clip (the last one may still be saving: try again in a moment)");
             return;
         }
         clipFrames = 0;
@@ -750,16 +832,18 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         Uri dest = tree;
         new Thread(() -> {
             String msg;
+            File gif = null;
             try {
-                File gif = new File(getCacheDir(), "clip.gif");
+                gif = File.createTempFile("clip", ".gif", getCacheDir());     /* one per clip: they may overlap */
                 if (!Native.gifEnd(gif.getPath())) throw new java.io.IOException("no clip");
                 String root = android.provider.DocumentsContract.getTreeDocumentId(dest);
-                SnapMaker.put(getContentResolver(), dest, SnapMaker.dir(getContentResolver(), dest, root, "CHGame screenshots"),
+                SnapMaker.put(getContentResolver(), dest, SnapMaker.dir(getContentResolver(), dest, root, Files.SHOTS),
                         file, "image/gif", gif);
-                gif.delete();
                 msg = "Saved CHGame screenshots/" + file;
             } catch (Exception e) {
                 msg = "Clip not saved: " + e.getMessage();
+            } finally {
+                if (gif != null) gif.delete();
             }
             final String m = msg;
             runOnUiThread(() -> toast(m));
@@ -799,8 +883,11 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         if (!running) return;
         if (clipFull) endClip();
         long now = System.nanoTime();
+        long in = coreAt;
         if (menuOpen || rewinding) frameAt = now;
-        else if (now - frameAt > HANG_NANOS) {
+        /* stuck only inside the core: a loop held up outside it (sound output or the screen waiting, as when
+           Bluetooth headphones connect) is not the game hanging, and catches up by itself */
+        else if (now - frameAt > HANG_NANOS && in != 0 && now - in > HANG_NANOS) {
             hangDialog();
             return;
         }
@@ -815,10 +902,22 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         String look = Options.look(getSharedPreferences(MainActivity.PREFS, MODE_PRIVATE));
         boolean scan = "scanlines".equals(look) || "crt".equals(look);
         int side = pictureSide(w, hh);
-        scanBmp = scan ? buildScanlines(side, "crt".equals(look)) : null;
+        scanBmp = scan && side > 0 ? buildScanlines(side, "crt".equals(look)) : null;
     }
 
     private float lastTapX, lastTapY;
+
+    /** A tap on the game at (x, y) in v's coordinates: portrait, the picture opens the menu (the black around it does
+        nothing); landscape, the top centre does, only while the touch pad is hidden. */
+    private void tapAt(View v, float x, float y) {
+        if (portrait()) {
+            int side = pictureSide(v.getWidth(), v.getHeight());
+            float x0 = (v.getWidth() - side) / 2f;
+            if (y < side && x >= x0 && x < x0 + side) menu();
+        } else if (touch.getVisibility() != View.VISIBLE
+                && x > v.getWidth() * 0.35f && x < v.getWidth() * 0.65f
+                && y < v.getHeight() * 0.15f) menu();
+    }
 
     private boolean portrait() {
         return getResources().getConfiguration().orientation == android.content.res.Configuration.ORIENTATION_PORTRAIT;
@@ -826,12 +925,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
 
     /** The picture's side for a w x h surface. Portrait: the widest whole-number scale (fit if under 1x), or with fill the full width. */
     private int pictureSide(int w, int h) {
-        if (portrait()) {
-            int s = fill ? Math.min(w, h) : w >= 128 ? w / 128 * 128 : Math.min(w, h);
-            return s <= h ? s : Math.min(w, h);
-        }
-        int side = Math.min(w, h);
-        return fill ? side : Math.max(1, side / 128) * 128;
+        return TouchControls.pictureSide(portrait(), fill, w, h);
     }
 
     /** The touch pad: the whole screen in landscape; in portrait, the space under the picture. */
@@ -850,11 +944,11 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         touch.setLayoutParams(lp);
     }
     @Override public void surfaceDestroyed(SurfaceHolder h) {
-        pauseGame();
+        boolean stopped = pauseGame();
         holder = null;
         Bitmap sc = scanBmp;
         scanBmp = null;
-        if (sc != null) sc.recycle();     /* pauseGame has stopped the loop: nothing draws it now */
+        if (sc != null && stopped) sc.recycle();     /* the loop has stopped: nothing draws it now (a stuck one keeps it to the GC) */
     }
 
     /* ---------------------------------------------------------------- */
@@ -868,6 +962,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         if (touchAuto && !ev.isSystem()) touch.setVisibility(View.GONE);
         /* the quit combo (Options): hold SELECT and press START, by default (either order); the
            resume point is saved as for any quit */
+        if (keymap == null) return super.dispatchKeyEvent(ev);
         if (!quitOff && (code == quitKey1 || code == quitKey2) && quitCombo(ev, code)) return true;
         int b = keymap.button(code);
         if (b == Keymap.UP2) b = Native.UP;   /* a second Up, on Y unless Map buttons moved it */
@@ -894,7 +989,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
             return true;
         }
         if (b == 0) return super.dispatchKeyEvent(ev);
-        if (ev.getAction() == KeyEvent.ACTION_DOWN) { keys |= b; pressed |= b; tapFrames = 0; }
+        if (ev.getAction() == KeyEvent.ACTION_DOWN) { keys |= b; synchronized (tapLock) { pressed |= b; tapFrames = 0; } }
         else if (ev.getAction() == KeyEvent.ACTION_UP) keys &= ~b;
         return true;
     }
@@ -909,7 +1004,8 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         int bit = first ? 1 : 2;
         if (down || up) { if (first) quitKey1Down = down; else quitKey2Down = down; }
         int gb = keymap.button(code);
-        boolean owned = (gb & 0xFFFF) == 0 && gb != Keymap.UP2;
+        boolean owned = gb == 0;    /* only a key mapped to nothing is the combo's alone: one with a game button or an app
+                                       function (menu, fast-forward, screenshot...) still does that when the combo is not made */
         if (up) {
             watch.removeCallbacks(quitLater);
             quitFired = false;      /* releasing either key re-arms the combo */
@@ -957,7 +1053,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     /* ---------------------------------------------------------------- */
 
     private void menu() {
-        if (!started) return;
+        if (!started || menuOpen) return;      /* one menu at a time */
         menuOpen = true;
         pauseGame();
         keys = 0;
@@ -991,22 +1087,41 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     /** Quick save or quick load from a pad key: slot 1, as the menu's slot 1 (the game paused). */
     private void quickSlot(boolean save) {
         if (!started || menuOpen) return;
+        menuOpen = true;      /* one at a time: a second press while it works does nothing */
         File f;
         try {
             f = Saves.stateFile(this, name, 1);
         } catch (java.io.IOException e) {
             toast("Bad game name");
+            closeMenu();
             return;
         }
         if (!pauseGame()) { toast("The game is busy: try again"); closeMenu(); return; }    /* the machine must be still while it is copied */
-        if (save) {
-            boolean ok = Native.saveState(f.getPath());
-            if (ok) slotPicture(f);
-            toast(ok ? "Saved to slot 1" : "Save failed");
-        } else {
-            toast(f.isFile() && Native.loadState(f.getPath()) ? "Loaded slot 1" : "Slot 1 is empty");
-        }
-        closeMenu();
+        runSlot(save, f, 1);
+    }
+
+    /** A state written or read off the UI thread (flash can be slow); the game is paused meanwhile. */
+    private volatile Thread slotThread;
+
+    private void runSlot(boolean save, File f, int slot) {
+        final Bitmap shot = save ? slotShot() : null;
+        slotThread = new Thread(() -> {
+            String msg;
+            if (save) {
+                boolean ok = saveStateTo(f, ".slot.tmp");
+                if (ok) slotPicture(f, shot);
+                msg = ok ? "Saved to slot " + slot : "Save failed (the slot keeps what it had)";
+            } else {
+                msg = loadSlot(f, slot);
+            }
+            runOnUiThread(() -> {
+                if (!save) clearRewind();
+                if (!isDestroyed()) toast(msg);
+                if (isFinishing() || isDestroyed()) { menuOpen = false; return; }
+                closeMenu();
+            });
+        }, "slot");
+        slotThread.start();
     }
 
     /** The state slots, to save into or load from; the game stays paused until a choice. */
@@ -1033,7 +1148,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
         CardDialog d = new CardDialog.Builder(this)
                 .setTitle(save ? "Save state" : "Load state")
                 .setView(scroll)
-                .setOnCancelListener(c -> menu())
+                .setOnCancelListener(c -> { menuOpen = false; menu(); })
                 .create();
         for (int i = 0; i < Saves.SLOTS; i++) {
             final int slot = i;
@@ -1060,15 +1175,7 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
             row.setOnClickListener(v -> {
                 d.dismiss();
                 if (!pauseGame()) { toast("The game is busy: try again"); closeMenu(); return; }    /* the machine must be still while it is copied */
-                if (save) {
-                    boolean ok = Native.saveState(f[slot].getPath());
-                    if (ok) slotPicture(f[slot]);
-                    toast(ok ? "Saved to slot " + (slot + 1) : "Save failed");
-                } else {
-                    toast(f[slot].isFile() && Native.loadState(f[slot].getPath())
-                            ? "Loaded slot " + (slot + 1) : "Slot " + (slot + 1) + " is empty");
-                }
-                closeMenu();
+                runSlot(save, f[slot], slot + 1);
             });
         }
         d.show();
@@ -1082,12 +1189,14 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
             toast("Choose a games folder first (Options)");
             return;
         }
-        int[] shot = screen.clone();
+        int[] shot;
+        synchronized (screen) { shot = screen.clone(); }
         String file = Saves.base(name) + " " + stamp() + ".png";
         new Thread(() -> {
             String msg;
+            File png = null;
             try {
-                File png = new File(getCacheDir(), "screenshot.png");
+                png = File.createTempFile("screenshot", ".png", getCacheDir());      /* one per shot: they may overlap */
                 android.graphics.Bitmap b = android.graphics.Bitmap.createScaledBitmap(
                         android.graphics.Bitmap.createBitmap(shot, 128, 128, android.graphics.Bitmap.Config.ARGB_8888),
                         512, 512, false);
@@ -1095,12 +1204,13 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
                     b.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, out);
                 }
                 String root = android.provider.DocumentsContract.getTreeDocumentId(tree);
-                SnapMaker.put(getContentResolver(), tree, SnapMaker.dir(getContentResolver(), tree, root, "CHGame screenshots"),
+                SnapMaker.put(getContentResolver(), tree, SnapMaker.dir(getContentResolver(), tree, root, Files.SHOTS),
                         file, "image/png", png);
-                png.delete();
                 msg = "Saved CHGame screenshots/" + file;
             } catch (Exception e) {
                 msg = "Screenshot not saved: " + e.getMessage();
+            } finally {
+                if (png != null) png.delete();
             }
             final String m = msg;
             runOnUiThread(() -> toast(m));
@@ -1108,10 +1218,15 @@ public class GameActivity extends Activity implements SurfaceHolder.Callback {
     }
 
     /** The screen as it is, beside a slot's state: the slot list shows it. The game is paused. */
-    private void slotPicture(File state) {
+    private Bitmap slotShot() {
+        int[] px;
+        synchronized (screen) { px = screen.clone(); }
+        return Bitmap.createBitmap(px, 128, 128, Bitmap.Config.ARGB_8888);
+    }
+
+    private void slotPicture(File state, Bitmap shot) {
         try (java.io.OutputStream out = new java.io.FileOutputStream(Saves.pictureFile(state))) {
-            Bitmap.createBitmap(screen, 128, 128, Bitmap.Config.ARGB_8888)
-                    .compress(Bitmap.CompressFormat.PNG, 100, out);
+            shot.compress(Bitmap.CompressFormat.PNG, 100, out);
         } catch (java.io.IOException e) {
             /* no picture: the state is still saved */
         }

@@ -176,10 +176,25 @@ bool fe_save_state(const char *path)
     if (ok) {
         FILE *f = fopen(path, "wb");
         ok = f && fwrite(buf, 1, n, f) == n;
-        if (f) fclose(f);
+        if (f) ok = fclose(f) == 0 && ok;      /* the last buffer is written here: a full disk fails here */
     }
     free(buf);
     return ok;
+}
+
+size_t fe_state_size(void)
+{
+    return running ? retro_serialize_size() : 0;
+}
+
+bool fe_save_state_mem(void *buf, size_t n)
+{
+    return running && buf && n == retro_serialize_size() && retro_serialize(buf, n);
+}
+
+bool fe_load_state_mem(const void *buf, size_t n)
+{
+    return running && buf && n > 0 && retro_unserialize(buf, n);
 }
 
 bool fe_load_state(const char *path)

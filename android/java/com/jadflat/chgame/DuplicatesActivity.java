@@ -51,20 +51,22 @@ public class DuplicatesActivity extends Page {
             for (Files.Entry e : extra) names.append(names.length() > 0 ? ", " : "").append(e.path);
             row("Delete the extra " + (extra.size() == 1 ? "copy" : "copies"), names.toString(), () -> {
                 if (busy) return;
-                Saves.confirm(this, "Delete " + names + "? " + set.get(0).path + " is kept.", () -> delete(extra));
+                String keep = set.get(0).path.substring(set.get(0).path.lastIndexOf('/') + 1);
+                StringBuilder orphan = new StringBuilder();
+                for (Files.Entry e : extra) {
+                    String n = e.path.substring(e.path.lastIndexOf('/') + 1);
+                    if (!n.equals(keep) && hasSaves(e)) orphan.append(orphan.length() > 0 ? ", " : "").append(n);
+                }
+                String warn = orphan.length() == 0 ? "" : "\n\nSaves kept under " + orphan + " will not belong to " + keep + ".";
+                Saves.confirm(this, "Delete " + names + "? " + set.get(0).path + " is kept." + warn, () -> delete(extra));
             });
         }
         focus();
     }
 
+    /** The games folder, if still usable (Files.tree): written to here. */
     private Uri tree() {
-        SharedPreferences prefs = getSharedPreferences(MainActivity.PREFS, MODE_PRIVATE);
-        String s = prefs.getString("tree", null);
-        if (s == null) return null;
-        Uri u = Uri.parse(s);
-        for (UriPermission p : getContentResolver().getPersistedUriPermissions())
-            if (p.getUri().equals(u) && p.isReadPermission() && p.isWritePermission()) return u;
-        return null;
+        return Files.tree(this, "tree", true);
     }
 
     /** True when the game has a save, a state or a resume point, all kept under its file's base name. */
@@ -99,8 +101,10 @@ public class DuplicatesActivity extends Page {
             for (Map.Entry<String, List<Files.Entry>> g : by.entrySet()) {
                 if (g.getValue().size() < 2) continue;
                 List<Files.Entry> l = g.getValue();
+                Map<Files.Entry, Boolean> saved = new java.util.HashMap<>();
+                for (Files.Entry e : l) saved.put(e, hasSaves(e));
                 Collections.sort(l, (a, b) -> {
-                    int s = Boolean.compare(hasSaves(b), hasSaves(a));
+                    int s = Boolean.compare(saved.get(b), saved.get(a));
                     if (s != 0) return s;
                     s = Integer.compare(a.path.length(), b.path.length());
                     if (s != 0) return s;

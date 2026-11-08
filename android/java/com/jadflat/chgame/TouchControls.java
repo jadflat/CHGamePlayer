@@ -135,6 +135,17 @@ final class TouchControls extends View {
         onMenu = r;
     }
 
+    interface Tap { void at(float x, float y); }
+    private Tap onTap;
+    private boolean stray;          /* the gesture began off every control */
+    private float strayX, strayY;
+
+    /** A tap that began and ended off every control (this view's coordinates): what a tap on the game below did.
+        The pad keeps every gesture (a second finger on a button would otherwise never reach it). */
+    void setOnTap(Tap t) {
+        onTap = t;
+    }
+
     String selectedName() {
         return GROUP_NAMES[selected];
     }
@@ -304,7 +315,10 @@ final class TouchControls extends View {
             case MotionEvent.ACTION_DOWN:
             case MotionEvent.ACTION_POINTER_DOWN: {
                 int c = hit(e.getX(i), e.getY(i), slop);
-                if (c == NONE) return false;            /* not ours: the game gets it */
+                if (c == NONE) {        /* kept all the same: a later finger on a button must still reach the pad */
+                    if (e.getActionMasked() == MotionEvent.ACTION_DOWN) { stray = true; strayX = e.getX(i); strayY = e.getY(i); }
+                    return true;
+                }
                 int id = e.getPointerId(i);
                 owner.put(id, c);
                 hold(id, c, e.getX(i), e.getY(i));
@@ -317,24 +331,28 @@ final class TouchControls extends View {
                     int c = owner.get(id, NONE);
                     if (c != NONE) hold(id, c, e.getX(p), e.getY(p));
                 }
-                return owner.size() > 0;
+                return true;
             case MotionEvent.ACTION_POINTER_UP:
                 if (owner.get(e.getPointerId(i), NONE) == MENU && onMenu != null && hit(e.getX(i), e.getY(i), slop) == MENU)
                     onMenu.run();
                 owner.delete(e.getPointerId(i));
                 bits.delete(e.getPointerId(i));
                 sync();
-                return owner.size() > 0;
+                stray = false;      /* two fingers: not a tap */
+                return true;
             case MotionEvent.ACTION_UP:
             case MotionEvent.ACTION_CANCEL: {
-                boolean had = owner.size() > 0;
                 if (e.getActionMasked() == MotionEvent.ACTION_UP && owner.get(e.getPointerId(i), NONE) == MENU
                         && onMenu != null && hit(e.getX(i), e.getY(i), slop) == MENU)
                     onMenu.run();
+                boolean tap = stray && owner.size() == 0 && e.getActionMasked() == MotionEvent.ACTION_UP
+                        && Math.hypot(e.getX(i) - strayX, e.getY(i) - strayY) < slop + 24 * getResources().getDisplayMetrics().density;
+                stray = false;
                 owner.clear();
                 bits.clear();
                 sync();
-                return had;
+                if (tap && onTap != null) onTap.at(e.getX(i), e.getY(i));
+                return true;
             }
             default:
                 return false;
