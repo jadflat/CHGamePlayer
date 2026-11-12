@@ -112,6 +112,11 @@ abstract class Page extends Activity {
     }
 
     /** A row in the current section; with no action it is just information. */
+    /** The row added last (null when none). */
+    View lastRow() {
+        return card == null || card.getChildCount() == 0 ? null : card.getChildAt(card.getChildCount() - 1);
+    }
+
     void row(String title, String summary, Runnable action) {
         row(title, summary, null, action);
     }

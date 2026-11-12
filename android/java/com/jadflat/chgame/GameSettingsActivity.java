@@ -38,6 +38,8 @@ public class GameSettingsActivity extends Page {
     @Override
     void build() {
         header("Settings: " + title);
+        final boolean notHere = getIntent().getBooleanExtra("new", false) && Updates.offered(prefs, file, false);     /* only offered: no file, so Hide = Don't offer */
+        if (!notHere) {
         section("Sound");
         String sound = Options.gameSound(prefs, file), volume = Options.gameVolume(prefs, file);
         row("Sound", sound == null ? "Same as Options (" + Options.SOUND_NAMES[indexOf(Options.SOUNDS, Options.sound(prefs))] + ")"
@@ -61,13 +63,16 @@ public class GameSettingsActivity extends Page {
                 Options.setGame(prefs, file, "volume", null);
                 build();
             });
+        }
         section("Screen");
+        if (!notHere) {
         String rotate = prefs.getString("rotate:" + file, "auto");
         String[] rotKeys = { "auto", "portrait", "landscape" };
         String[] rotNames = { "Follow the device", "Always upright", "Always sideways" };
         row("Screen rotation", rotNames[indexOf(rotKeys, rotate)], () ->
                 pick("Screen rotation for " + title, rotNames, indexOf(rotKeys, rotate),
                         i -> prefs.edit().putString("rotate:" + file, rotKeys[i]).apply()));
+        }
         String pv = prefs.getString("preview:" + file, "default");
         String[] pvKeys = { "default", "live", "video", "picture" };
         String[] pvNames = { "Default (Options)", "Live", "Video", "Picture" };
@@ -79,13 +84,25 @@ public class GameSettingsActivity extends Page {
         section("Buttons");
         row("Buttons", prefs.contains("keymap:" + file) ? "Own mapping" : "The main mapping", () ->
                 startActivity(new Intent(this, MapButtonsActivity.class).putExtra("file", file).putExtra("title", title)));
+        if (!notHere) {
         section("ES-DE media");
         row(hasClip ? "Remake preview clip" : "Make preview clip", clipStatus != null ? clipStatus
                 : "Records a 15 s video, screenshot and cover for this game", this::makeClip);
+        }
         section("Game");
         String path = getIntent().getStringExtra("path") == null ? file : getIntent().getStringExtra("path");
         boolean hid = Options.hidden(prefs).contains(path);
-        row(hid ? "Show game in the list again" : "Hide game", hid ? "Hidden now" : "Leave it out of the list (Options shows hidden games)", () -> {
+        row(hid ? "Show game in the list again" : "Hide game", hid ? "Hidden now" : notHere ? "Not installed: leaves it out of the list" : "Leave it out of the list (Options shows hidden games)", () -> {
+            if (notHere) {
+                new Thread(() -> {
+                    Updates.offered(prefs, file, true);
+                    runOnUiThread(() -> {
+                        android.widget.Toast.makeText(this, title + " will not be offered again", android.widget.Toast.LENGTH_LONG).show();
+                        finish();
+                    });
+                }).start();
+                return;
+            }
             boolean now = Options.toggleHidden(prefs, path);
             android.widget.Toast.makeText(this, title + (now ? " hidden. Options shows hidden games." : " shown again"),
                     android.widget.Toast.LENGTH_LONG).show();
@@ -128,7 +145,7 @@ public class GameSettingsActivity extends Page {
                 });
             }).start();
         });
-        row("Remove game", "Delete the game file; you choose whether it can be downloaded again", this::confirmRemove);
+        row("Remove game", notHere ? "Not installed; you choose whether it stays offered" : "Delete the game file; you choose whether it can be downloaded again", this::confirmRemove);
         focus();
     }
 
@@ -136,7 +153,8 @@ public class GameSettingsActivity extends Page {
     private void confirmRemove() {
         new CardDialog.Builder(this)
                 .setTitle("Remove " + title + "?")
-                .setMessage("The game file is deleted from the games folder. Its saves stay.\n\nKeep it available to download again?")
+                .setMessage((getIntent().getBooleanExtra("new", false) && Updates.offered(prefs, file, false) ? "The game is not installed: there is no file to delete. Its saves stay."
+                        : "The game file is deleted from the games folder. Its saves stay.") + "\n\nKeep it available to download again?")
                 .setPositiveButton("Keep available", (dlg, w) -> removeGame(true))
                 .setNegativeButton("Don't offer", (dlg, w) -> removeGame(false))
                 .setNeutralButton("Cancel", null)

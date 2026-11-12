@@ -53,10 +53,13 @@ import java.util.concurrent.Executors;
  * Options, where everything else lives.
  */
 public class MainActivity extends Activity {
-    static final String VERSION = "2.22";
+    static final String VERSION = "2.43";
     static final String PREFS = "chgame";
 
     private SharedPreferences prefs;
+    private TextView newBanner, updBanner;
+    private LinearLayout allRow;
+    private boolean gettingAll;
     private TextView count, version, artTitle, artInfo, artPlayed, artPort, dupBanner, artUpdate;
     private static boolean updatesChecked;       /* the quiet update check runs once each time the app starts */
     static final int GREEN = 0xFF7FDB8F;
@@ -70,7 +73,9 @@ public class MainActivity extends Activity {
     private final List<Files.Entry> games = new ArrayList<>();         /* in list order */
     private final List<Object> rows = new ArrayList<>();               /* a section's name (String) or a game's index (Integer) */
     private final List<Integer> depths = new ArrayList<>();            /* parallel to rows: how far a row is indented */
-    private int groupRow = -1;                                  /* the selected group row, or -1 when a game is selected */
+    private TextView hideChip;
+    private int keepFirst = -1, keepTop;                        /* scroll to restore after an X toggle with hidden games shown */
+    private int groupRow = -1;                                 /* the selected group row, or -1 when a game is selected */
     private long toggledAt;                                     /* the key and the click can both arrive: one toggle */
     private Set<String> hidden = new HashSet<>(), favs = new HashSet<>();
     private int shownRow = -1;                                  /* a game can be on two rows (Favourites, Last played) */
@@ -172,6 +177,17 @@ public class MainActivity extends Activity {
         dupBanner.setVisibility(View.GONE);
         dupBanner.setOnClickListener(v -> startActivity(new Intent(this, DuplicatesActivity.class)));
         left.addView(dupBanner);
+        /* every new game and every update at once */
+        allRow = new LinearLayout(this);
+        allRow.setOrientation(LinearLayout.HORIZONTAL);
+        allRow.setVisibility(View.GONE);
+        newBanner = allButton(false);
+        updBanner = allButton(true);
+        LinearLayout.LayoutParams gap = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1);
+        gap.rightMargin = Ui.dp(this, 4);                  /* 4dp between the two buttons, none after the last */
+        allRow.addView(newBanner, gap);
+        allRow.addView(updBanner, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        left.addView(allRow);
 
         FrameLayout body = new FrameLayout(this);
         list = new ListView(this);
@@ -222,6 +238,7 @@ public class MainActivity extends Activity {
                 if (g >= 0) select(g, row);
                 else if (isGroup(row)) {
                     groupRow = row;
+                    keepHeader(row);
                     list.setItemChecked(row, true);
                     groupCard();
                 }
@@ -294,7 +311,10 @@ public class MainActivity extends Activity {
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT);
             lp.setMargins(Ui.dp(this, 4), 0, Ui.dp(this, 4), 0);
-            hints.addView(Ui.chip(this, h[0], h[1]), lp);
+            View chip = Ui.chip(this, h[0], h[1]);
+            if (h[0].equals("X")) hideChip = (TextView) chip;
+            if (h[0].equals("X")) chip.setOnClickListener(v -> { if (shown >= 0) toggleHidden(shown); });
+            hints.addView(chip, lp);
         }
         info.addView(hints);
         hintRow = hints;
@@ -521,6 +541,11 @@ public class MainActivity extends Activity {
         updatesChecked = true;
         new Thread(() -> {
             boolean changed = Updates.seedBundled(this, prefs, VERSION);
+            try {
+                changed |= Updates.reofferGone(this, prefs, t);
+            } catch (RuntimeException e) {
+                /* next start */
+            }
             if (System.currentTimeMillis() - prefs.getLong("newAt14", 0) > 2 * 3600_000L) {      /* the normal scan: every 2 hours */
                 try {
                     int hits = Updates.limitHits.get();
@@ -645,6 +670,7 @@ public class MainActivity extends Activity {
 
     /** The right panel's Update button: fetches the new .CHG over the selected game's file. */
     private void updateSelected() {
+        if (gettingAll) return;
         if (shown < 0 || shown >= games.size()) return;
         Files.Entry e = games.get(shown);
         if (isNew(e)) { installNew(e); return; }
@@ -669,6 +695,85 @@ public class MainActivity extends Activity {
         }, "update-game").start();
     }
 
+    private TextView allButton(boolean updates) {
+        TextView b = Ui.text(this, "", 14, 0xFF00391A, Ui.MEDIUM);
+        b.setGravity(Gravity.CENTER);
+        b.setPadding(Ui.dp(this, 12), Ui.dp(this, 8), Ui.dp(this, 12), Ui.dp(this, 8));
+        b.setBackground(Ui.rounded(this, GREEN, 12));
+        b.setFocusable(true);
+        b.setOnClickListener(v -> getAll(updates));
+        return b;
+    }
+
+    /** The "Download all" and "Update all" buttons: each shown when listed games are new / have an update. */
+    private void updateAllBanner() {
+        if (allRow == null || gettingAll) return;
+        int news = 0, ups = 0;
+        for (Files.Entry e : games) {
+            if (isNew(e)) news++;
+            else if (Updates.pending(prefs, fileName(e)) != null) ups++;
+        }
+        newBanner.setText("Download all " + news);
+        updBanner.setText("Update all " + ups);
+        newBanner.setEnabled(true);
+        updBanner.setEnabled(true);
+        newBanner.setVisibility(news > 0 ? View.VISIBLE : View.GONE);
+        updBanner.setVisibility(ups > 0 ? View.VISIBLE : View.GONE);
+        allRow.setVisibility(news + ups > 0 ? View.VISIBLE : View.GONE);
+    }
+
+    /** Installs every new game (updates false) or updates every game with an update, one after another. */
+    private void getAll(boolean updates) {
+        Uri t = tree();
+        if (gettingAll || syncing || t == null) return;
+        final java.util.List<Files.Entry> todo = new java.util.ArrayList<>();
+        final java.util.List<String> held = new java.util.ArrayList<>();
+        for (Files.Entry e : games) {
+            if (updates ? !isNew(e) && Updates.pending(prefs, fileName(e)) != null : isNew(e)) {
+                if (isNew(e)) { if (!installing.add(e.path)) continue; held.add(e.path); }     /* the panel is installing it: left out */
+                todo.add(e);
+            }
+        }
+        if (todo.isEmpty()) return;
+        gettingAll = true;
+        syncing = true;
+        final java.util.List<android.net.Uri> doneUris = new java.util.ArrayList<>();
+        final TextView btn = updates ? updBanner : newBanner;
+        newBanner.setEnabled(false);
+        updBanner.setEnabled(false);
+        new Thread(() -> {
+            int ok = 0, bad = 0, n = 0;
+            String last = null;
+            try {
+            for (Files.Entry e : todo) {
+                final int at = ++n;
+                runOnUiThread(() -> btn.setText("Getting " + at + " of " + todo.size() + "…"));
+                String err;
+                try {
+                    if (isNew(e)) {
+                        JSONObject info = newInfo(e);
+                        err = info == null ? "gone" : Updates.install(this, prefs, t, info);
+                    } else err = Updates.apply(this, prefs, e, fileName(e));
+                } catch (Throwable ex) { err = ex.getMessage() == null ? String.valueOf(ex) : ex.getMessage(); }
+                if (err == null) { ok++; doneUris.add(e.uri); }
+                else { bad++; last = displayTitle(e) + ": " + err; }
+            }
+            } finally {
+                final int fo = ok, fb = bad;
+                final String fl = last;
+                runOnUiThread(() -> {
+                    gettingAll = false;
+                    syncing = false;
+                    installing.removeAll(held);
+                    for (android.net.Uri u : doneUris) { carts.remove(u); cartCache.remove(u); }
+                    if (isFinishing()) return;
+                    Saves.toast(this, fo + " done" + (fb > 0 ? ", " + fb + " failed (" + fl + ")" : ""));
+                    refresh();
+                });
+            }
+        }, "get-all").start();
+    }
+
     /** A game found on GitHub from a developer already here: listed, not in the folder yet. */
     private static boolean isNew(Files.Entry e) {
         return "chgnew".equals(e.uri.getScheme());
@@ -682,6 +787,7 @@ public class MainActivity extends Activity {
 
     /** The panel's Install button for a new game. */
     private void installNew(Files.Entry e) {
+        if (gettingAll || syncing) return;
         JSONObject n = newInfo(e);
         Uri t = tree();
         if (n == null || t == null) return;
@@ -889,7 +995,7 @@ public class MainActivity extends Activity {
             return c != 0 ? c : a.path.compareToIgnoreCase(b.path);
         });
         Set<String> have = new HashSet<>();
-        for (Files.Entry e : games) have.add(fileName(e).toUpperCase(Locale.ROOT));
+        for (Files.Entry e : found) have.add(fileName(e).toUpperCase(Locale.ROOT));
         for (JSONObject n : prefs.getBoolean("showNew", true) ? Updates.newGames(prefs) : new java.util.ArrayList<JSONObject>()) {
             String file = Updates.newFile(n);
             if (!have.add(file.toUpperCase(Locale.ROOT))) continue;
@@ -906,9 +1012,16 @@ public class MainActivity extends Activity {
         count.setText(games.size() + (games.size() == 1 ? " game" : " games")
                 + (hiddenCount > 0 && !showHidden ? " · " + hiddenCount + " hidden" : ""));
         adapter.notifyDataSetChanged();
+        updateAllBanner();
         int pos = 0;
         String lastPath = prefs.getString("lastPath", null);
-        for (int i = 0; i < games.size(); i++) if (games.get(i).path.equals(lastPath)) pos = i;
+        boolean foundLast = false;
+        for (int i = 0; i < games.size(); i++) if (games.get(i).path.equals(lastPath)) { pos = i; foundLast = true; }
+        String nextPath = prefs.getString("nextPath", null);
+        if (nextPath != null) {         /* the game left the list from its settings page: its neighbour */
+            if (!foundLast) for (int i = 0; i < games.size(); i++) if (games.get(i).path.equals(nextPath)) pos = i;
+            prefs.edit().remove("nextPath").apply();
+        }
         shown = -1;
         shownRow = -1;
         groupRow = -1;
@@ -936,7 +1049,16 @@ public class MainActivity extends Activity {
         int top = headerAbove(row) ? Ui.dp(this, 40) : 0;
         String mk = "selTop:" + gridMode + getResources().getConfiguration().orientation;
         if (prefs.contains(mk)) { top = prefs.getInt(mk, top); prefs.edit().remove(mk).apply(); }   /* reopen where it was */
-        list.setSelectionFromTop(row, top);
+        final int selRow = row;
+        final boolean kept = keepFirst >= 0;
+        int sr = row;
+        if (kept) { top = keepTop; sr = Math.min(keepFirst, rows.size() - 1); }   /* an X toggle: the scroll stays */
+        keepFirst = -1;
+        final int ft = top, fr = sr;
+        list.setSelectionFromTop(fr, ft);
+        if (kept) list.post(() -> { if (!isFinishing()) list.setSelectionFromTop(fr, ft); });
+        else list.post(() -> { if (!isFinishing() && shown >= 0 && rowOf(shown) == fr) list.setSelectionFromTop(fr, ft); });   /* after the layout */
+        row = selRow;
         previewing = false;
         select(pos, row);
     }
@@ -1137,10 +1259,7 @@ public class MainActivity extends Activity {
         if (!gridMode) list.setItemChecked(row, true);
         /* the first game of a section: keep its section's name in view above it (the list
            would otherwise scroll the game to the top and the name out of sight) */
-        if (headerAbove(row) && row - 1 < list.getFirstVisiblePosition()) {
-            final int r = row;
-            list.post(() -> list.setSelectionFromTop(r, Ui.dp(this, 40)));
-        }
+        keepHeader(row);
         showSelected();
         if (moved) {
             Ui.sfx(this, false);
@@ -1149,6 +1268,15 @@ public class MainActivity extends Activity {
         }
         if (gridMode) adapter.notifyDataSetChanged();       /* the highlight moves to this cell */
         if (moved || !previewing) startPreview();
+    }
+
+    /** A row that starts a section: keeps the section's name in view above it. */
+    private void keepHeader(int row) {
+        if (row < 0 || row >= rows.size() || !headerAbove(row)) return;
+        View h = list.getChildAt(row - 1 - list.getFirstVisiblePosition());
+        if (h != null && h.getTop() >= 0) return;
+        final int r = row;
+        list.post(() -> list.setSelectionFromTop(r, Ui.dp(this, 40)));
     }
 
     /** True for a section's name row. */
@@ -1211,12 +1339,26 @@ public class MainActivity extends Activity {
         field.setSingleLine(true);
         field.setHint("Part of a title");
         field.setPadding(Ui.dp(this, 24), Ui.dp(this, 16), Ui.dp(this, 24), Ui.dp(this, 8));
-        new CardDialog.Builder(this)
+        field.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_DONE);
+        final android.app.Dialog[] dlg = new android.app.Dialog[1];
+        dlg[0] = new CardDialog.Builder(this)
                 .setTitle("Search the games")
                 .setView(field)
                 .setPositiveButton("OK", (d, w) -> findTitle(field.getText().toString()))
                 .setNegativeButton("Cancel", null)
                 .show();
+        field.setOnKeyListener((v, kc, ev) -> {
+            if (kc == android.view.KeyEvent.KEYCODE_ENTER && ev.getAction() == android.view.KeyEvent.ACTION_UP) {
+                if (dlg[0] != null) dlg[0].dismiss();
+                findTitle(field.getText().toString());
+            }
+            return kc == android.view.KeyEvent.KEYCODE_ENTER;
+        });
+        field.setOnEditorActionListener((v, a, ev) -> {
+            if (dlg[0] != null) dlg[0].dismiss();
+            findTitle(field.getText().toString());
+            return true;
+        });
         field.requestFocus();
     }
 
@@ -1226,7 +1368,17 @@ public class MainActivity extends Activity {
         if (want.isEmpty()) return;
         for (int i = 0; i < games.size(); i++) {
             if (displayTitle(games.get(i)).toLowerCase(Locale.ROOT).contains(want)) {
-                goTo(i);
+                final int g = i;
+                for (int pass = 0; pass < 3 && rowOf(g) < 0; pass++) {      /* inside a closed group: open the closed groups (nested ones next pass) */
+                    SharedPreferences.Editor ge = prefs.edit();
+                    for (Object o : rows) if (o instanceof Group && !((Group) o).open) ge.putBoolean("grp:" + ((Group) o).key, true);
+                    ge.apply();
+                    buildRows();
+                    adapter.notifyDataSetChanged();
+                }
+                goTo(g);
+                /* the dialog closing and the keyboard hiding relayout the list and undo the scroll: again after that */
+                list.postDelayed(() -> { if (!isFinishing()) goTo(g); }, 350);
                 return;
             }
         }
@@ -1635,6 +1787,7 @@ public class MainActivity extends Activity {
         }
         hintRow.setVisibility(portrait() || getResources().getConfiguration().screenHeightDp < 420 ? View.GONE : View.VISIBLE);
         Files.Entry e = games.get(shown);
+        if (hideChip != null) hideChip.setText("X  " + (hidden != null && hidden.contains(e.path) ? "Show" : "Hide"));
         if (isNew(e)) {
             JSONObject n = newInfo(e);
             art.set(newPic(e));
@@ -1856,15 +2009,19 @@ public class MainActivity extends Activity {
     /** The rows changed in the background (a picture arrived): redrawn once the finger is up, or it would cancel a long press. */
     private void rowsChanged() {
         if (fingerDown) rowsPending = true; else adapter.notifyDataSetChanged();
+        if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) updateAllBanner();
+        else runOnUiThread(() -> { if (!isFinishing()) updateAllBanner(); });
     }
 
     /** A long press on a touch screen: the game's settings page. */
     private void gameSettings(int pos, int row) {
         select(pos, row);
         Files.Entry e = games.get(pos);
+        int nb = neighbour(pos);
+        if (nb >= 0) prefs.edit().putString("nextPath", games.get(nb).path).apply();   /* used only if this game leaves the list */
         startActivity(new Intent(this, GameSettingsActivity.class)
                 .putExtra("file", fileName(e)).putExtra("path", e.path).putExtra("title", displayTitle(e))
-                .putExtra("port", isPort(e)));
+                .putExtra("port", isPort(e)).putExtra("new", isNew(e)));
     }
 
     /** Everything the app knows about a game: its credits, record, file and play time. */
@@ -1897,13 +2054,44 @@ public class MainActivity extends Activity {
                 .setMessage(s).setPositiveButton("OK", null).show();
     }
 
+    /** The game at pos is about to leave the list: lastPath becomes the next game in the displayed order (else the previous one). */
+    private void keepNear(int pos) {
+        int nx = neighbour(pos);
+        if (nx >= 0) prefs.edit().putString("lastPath", games.get(nx).path).apply();
+    }
+
+    /** The next game in the displayed order after pos (else the previous one), or -1. */
+    private int neighbour(int pos) {
+        int r = rowOf(pos), nx = -1;
+        for (int q = r + 1; r >= 0 && q < rows.size() && nx < 0; q++) if (gameAt(q) >= 0) nx = gameAt(q);
+        for (int q = r - 1; r >= 0 && q >= 0 && nx < 0; q--) if (gameAt(q) >= 0) nx = gameAt(q);
+        return nx;
+    }
+
     /** Hides the game at pos from the list, or shows a hidden one again. */
     private void toggleHidden(int pos) {
         if (pos < 0 || pos >= games.size()) return;
         Files.Entry e = games.get(pos);
+        if (isNew(e)) {                 /* only offered: Hide = Don't offer */
+            final String f = fileName(e), t = displayTitle(e);
+            keepNear(pos);
+            new Thread(() -> {
+                boolean did = Updates.offered(prefs, f, true);
+                runOnUiThread(() -> { if (did) Saves.toast(this, t + " will not be offered again"); refresh(); });
+            }).start();
+            return;
+        }
         boolean now = Options.toggleHidden(prefs, e.path);
         Saves.toast(this, displayTitle(e) + (now ? " hidden. Options shows hidden games." : " shown again"));
-        if (now && pos + 1 < games.size()) prefs.edit().putString("lastPath", games.get(pos + 1).path).apply();
+        if (now && !Options.showHidden(prefs)) keepNear(pos);
+        else if (Options.showHidden(prefs)) {      /* the rows stay: so does the scroll */
+            int fv = list.getFirstVisiblePosition();
+            int sel = shown >= 0 ? rowOf(shown) : -1;
+            View c0 = sel >= 0 ? list.getChildAt(sel - fv) : null;
+            if (c0 == null) { sel = fv; c0 = list.getChildAt(0); }
+            keepFirst = sel;
+            keepTop = c0 == null ? 0 : c0.getTop();
+        }
         refresh();
     }
 
@@ -1996,7 +2184,7 @@ public class MainActivity extends Activity {
                 int n = gridRowNear(r, code == KeyEvent.KEYCODE_DPAD_UP ? -1 : 1);
                 if (n < 0) return;
                 keepVisible(n);
-                if (isGroup(n)) { groupRow = n; adapter.notifyDataSetChanged(); groupCard(); }
+                if (isGroup(n)) { groupRow = n; keepHeader(n); adapter.notifyDataSetChanged(); groupCard(); }
                 else select(cellsAt(n)[0], n);
             }
             return;
@@ -2019,6 +2207,7 @@ public class MainActivity extends Activity {
             if (isGroup(r)) {
                 keepVisible(r);
                 groupRow = r;
+                keepHeader(r);
                 adapter.notifyDataSetChanged();
                 groupCard();
                 return;

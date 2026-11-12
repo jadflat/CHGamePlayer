@@ -24,12 +24,17 @@ import java.util.regex.Pattern;
  *   3. the checksum recorded the first time this release's file was downloaded on this device: a file swapped later
  *      under the same release tag is refused (trust on first use).
  * No published digest at all (an old release, or the page could not be read) means no download: it fails safe.
+ * Exception: a file committed in a release-less repo and addressed by its commit (raw.githubusercontent.com
+ * .../<40-hex commit>/...) has no published checksum. It gets the catalogue pin if there is one, else trust on first use
+ * (the checksum of the first download of that commit and name is recorded and must match later), is size-bounded by the
+ * caller, and its .CHG header is checked by the installer.
  * The files bundled inside the app are not checked here: they come with the app.
  */
 final class Pins {
     private Pins() { }
 
     private static final Pattern LINK = Pattern.compile("/releases/download/[^/\"]+/([^\"?/]+)\"");
+    private static final Pattern RAW_URL = Pattern.compile("https://raw\\.githubusercontent\\.com/([\\w.-]+/[\\w.-]+)/([0-9a-f]{40})/([^/?#]+)");
     private static final Pattern DIGEST = Pattern.compile("sha256:([0-9a-fA-F]{64})");
     private static final Pattern RELEASE_URL = Pattern.compile(
             "^https://github\\.com/([\\w.-]+/[\\w.-]+)/releases/download/([^/]+)/([^/?#]+)$");
@@ -166,6 +171,22 @@ final class Pins {
      */
     static String check(Context c, String url, String pinned, String seen) {
         String[] p = releaseParts(url);
+        if (p == null && url != null) {         /* a file committed in a repo, addressed by its commit: no published checksum, accepted (see the class comment) */
+            Matcher r = RAW_URL.matcher(url);
+            if (r.matches() && (pinned == null || pinned.isEmpty())) {
+                String fn = unescape(r.group(3));
+                if (fn == null || fn.isEmpty()) return "the file's name could not be read: not installed";
+                if (seen == null || seen.length() != 64) return "the file could not be checked";
+                /* trust on first use, as for releases: the same commit and name must always give the same bytes */
+                SharedPreferences prefs = c.getSharedPreferences(MainActivity.PREFS, Context.MODE_PRIVATE);
+                String k = key(r.group(1), r.group(2), fn);
+                String was = prefs.getString(k, null);
+                if (was != null && !was.equalsIgnoreCase(seen))
+                    return "the file changed since it was first downloaded: not installed";
+                if (was == null) prefs.edit().putString(k, seen.toLowerCase(Locale.ROOT)).apply();
+                return null;
+            }
+        }
         if (p == null) return pinned != null && !pinned.isEmpty() ? verdict(pinned, null, null, seen)
                 : "the file is not from a GitHub release and has no checksum: not installed";
         return check(c, p[0], p[1], p[2], pinned, seen);

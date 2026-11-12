@@ -273,7 +273,7 @@ public class CatalogueActivity extends Page {
         Item it = installed(orig) ? takePending(orig) : orig;
         {
             boolean in = installed(it), up = in && update(it) != null;
-            String summary = it.description + (it.author.isEmpty() ? "" : "\nBy " + it.author)
+            String summary = (it.description.replaceFirst("^(Installed before; not on this device now\\.|Restored; not on this device\\.|Removed from this device\\.)\\s*", "").trim().isEmpty() ? (it.author.isEmpty() ? "" : "By " + it.author) : it.description.replaceFirst("^(Installed before; not on this device now\\.|Restored; not on this device\\.|Removed from this device\\.)\\s*", "") + (it.author.isEmpty() ? "" : "\nBy " + it.author))
                     + (it.licence.isEmpty() ? "" : " · " + it.licence);
             if (working.contains(it)) {
                 row(it.name, summary, up ? "Updating…" : "Getting…", null);
@@ -298,7 +298,10 @@ public class CatalogueActivity extends Page {
 
     private Files.Entry chgIn(Item it, String[] f) {
         if (!it.chgTitle.isEmpty()) {
-            return haveKey.get(Cart.key(new String[] { it.chgTitle, it.chgAuthor }));
+            Files.Entry k = haveKey.get(Cart.key(new String[] { it.chgTitle, it.chgAuthor }));
+            if (k != null) return k;
+            Files.Entry byFile = haveName.get(f[0].toUpperCase(Locale.ROOT));    /* same file name, another version/header */
+            return byFile;
         }
         return haveName.get(f[0].toUpperCase(Locale.ROOT));      /* no header known (a list without it): by name */
     }
@@ -513,10 +516,17 @@ public class CatalogueActivity extends Page {
         build();
     }
 
-    /** Lets the user pick a game to hide; "Restore all" brings the hidden ones back. */
+    /** Dismissed with Don't offer (newdone:) and not on the card: Options > Offer removed games again owns it, not this list. */
+    private boolean dismissed(Item it) {
+        if (it.repo.isEmpty() || !prefs.contains("newdone:" + it.repo)) return false;
+        for (String[] f : it.files) if (Files.isGame(f[0]) && chgIn(it, f) != null) return false;
+        return true;
+    }
+
+    /** Lets the user pick a game to hide;"Restore all" brings the hidden ones back. */
     private void removeGame() {
         final List<Item> shown = new ArrayList<>();
-        for (Item it : items) if (!gone(it)) shown.add(it);
+        for (Item it : items) if (!gone(it) && !dismissed(it)) shown.add(it);
         Collections.sort(shown, (a, b) -> a.name.compareToIgnoreCase(b.name));
         final Set<String> hidden = hiddenSet();
         if (shown.isEmpty() && hidden.isEmpty()) {
@@ -552,10 +562,11 @@ public class CatalogueActivity extends Page {
                                         } catch (Exception ex) { /* not deleted */ }
                                     }
                                     final int done = n;
+                                    if (done == list2.size()) Updates.markDeleted(prefs, it.repo);      /* whatever the screen is doing */
                                     runOnUiThread(() -> {
+                                        hideGame(it);
                                         if (isFinishing()) return;
                                         Saves.toast(this, done == list2.size() ? "Deleted the game file" : "Could not delete the game file");
-                                        hideGame(it);
                                         scanFolder();
                                     });
                                 }, "catalogue-delete").start();
@@ -567,7 +578,11 @@ public class CatalogueActivity extends Page {
                 .setNegativeButton("Cancel", null);
         if (!hidden.isEmpty())
             b.setNeutralButton("Restore all (" + hidden.size() + ")", (d, w) -> {
+                final Set<String> wasHidden = hiddenSet();
+                Updates.restoreDeleted(prefs, wasHidden);      /* persisted first; the network (if any) comes after */
                 prefs.edit().remove("cat:hidden").apply();
+                final Uri rt = tree();
+                if (rt != null) new Thread(() -> { try { Updates.reofferGone(this, prefs, rt); Updates.offerRestored(this, prefs, rt, wasHidden); } catch (RuntimeException ex) { /* next start */ } }).start();   /* installed before, file gone: offered at once */
                 statusText = "Restored removed games";
                 build();
             });

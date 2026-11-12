@@ -8,6 +8,8 @@ import android.net.Uri;
 import android.os.Bundle;
 import android.provider.DocumentsContract;
 import android.view.KeyEvent;
+import android.view.View;
+import android.widget.LinearLayout;
 import android.widget.TextView;
 
 /**
@@ -74,15 +76,27 @@ public class OptionsActivity extends Page {
             Stats.setEnabled(this, !Stats.enabled(this));
             build();
         });
-        int dismissed = Updates.dismissedCount(prefs);
-        row("Offer removed games again", dismissed == 0 ? "No removed or dismissed games" : dismissed + " removed or dismissed: offer them all again", () -> {
-            Updates.resetDismissed(prefs);
-            Saves.toast(this, "Removed games can be offered again");
-            build();
-        });
+        row("Offer removed games again", "Counting...", () -> new Thread(() -> {
+            Updates.resetDismissed(this, prefs, Files.tree(this, "tree", true));
+            runOnUiThread(() -> {
+                if (isFinishing()) return;
+                Saves.toast(this, "Removed games can be offered again");
+                build();
+            });
+        }, "reset-dismissed").start());
+        final View dismissedRow = lastRow();
+        new Thread(() -> {
+            final int dismissed = Updates.dismissedCount(this, prefs, Files.tree(this, "tree", true));
+            runOnUiThread(() -> {
+                if (isFinishing() || dismissedRow == null) return;
+                View tx = dismissedRow instanceof LinearLayout && ((LinearLayout) dismissedRow).getChildCount() > 0 ? ((LinearLayout) dismissedRow).getChildAt(0) : null;
+                if (tx instanceof LinearLayout && ((LinearLayout) tx).getChildCount() > 1 && ((LinearLayout) tx).getChildAt(1) instanceof TextView)
+                    ((TextView) ((LinearLayout) tx).getChildAt(1)).setText(dismissed == 0 ? "No removed or dismissed games" : dismissed + " removed or dismissed: offer them all again");
+            });
+        }, "dismissed-count").start();
         if (hiddenCount > 0)
-            row("Show all hidden games again", hiddenCount + " games", () -> Saves.confirm(this,
-                    "Show all " + hiddenCount + " hidden games again?", () -> {
+            row("Show all hidden games again", hiddenCount + (hiddenCount == 1 ? " game" : " games"), () -> Saves.confirm(this,
+                    (hiddenCount == 1 ? "Show the hidden game again?" : "Show all " + hiddenCount + " hidden games again?"), () -> {
                         prefs.edit().remove("hidden").apply();
                         build();
                     }));
