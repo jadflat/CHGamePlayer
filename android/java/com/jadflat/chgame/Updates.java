@@ -378,7 +378,9 @@ final class Updates {
     static int dismissedCount(Context c, SharedPreferences p, Uri tree) {
         java.util.Set<String> haveRepos = reposInFolder(c, p, tree);
         int n = 0;
-        for (String k : p.getAll().keySet()) if (k.startsWith("newdone:") && !haveRepos.contains(k.substring(8)) && !hiddenRepo(p, k.substring(8))) n++;
+        java.util.Set<String> deleted = p.getStringSet("cat:hiddenDeleted", new java.util.HashSet<>());
+        for (String k : p.getAll().keySet()) if (k.startsWith("newdone:") && !haveRepos.contains(k.substring(8)) && !hiddenRepo(p, k.substring(8)) && !deleted.contains(k.substring(8))) n++;
+        for (String r : deleted) if (!haveRepos.contains(r)) n++;      /* removed with the file too: counted here once, even when also hidden or dismissed */
         return n;
     }
 
@@ -426,6 +428,7 @@ final class Updates {
             if (p.contains("got:" + m.getKey())) gotRepo.put(m.getValue()[0], new String[] { m.getKey(), m.getValue()[1] });
         java.util.Map<String, String> assetOf = new java.util.HashMap<>();       /* repo -> asset name, got: or not (dismissal removes got:) */
         for (Map.Entry<String, String[]> m : sources(c, p).entrySet()) assetOf.put(m.getValue()[0], m.getValue()[1]);
+        java.util.Set<String> noGame = new java.util.HashSet<>();
         java.util.Map<String, String> fresh = new java.util.HashMap<>();         /* repo -> new: entry for its latest release (network, worker thread) */
         for (String k : new java.util.ArrayList<>(p.getAll().keySet())) {
             String repo = k.startsWith("newdone:") ? k.substring(8) : null;
@@ -457,6 +460,7 @@ final class Updates {
                     fresh.put(repo, n.toString());
                     break;
                 }
+                if (!fresh.containsKey(repo)) noGame.add(repo);      /* looked up fine, no release game: only a bundled copy can come back */
             } catch (Exception ex) { /* offline: falls back below */ }
         }
         synchronized (LOCK) {
@@ -465,11 +469,22 @@ final class Updates {
                 if (k.startsWith("newdone:") && !haveRepos.contains(k.substring(8)) && !hiddenRepo(p, k.substring(8))) {
                     String repo = k.substring(8);
                     if (fresh.containsKey(repo)) ed.remove(k).putString("new:" + repo, fresh.get(repo));      /* installed before: never the bundled copy */
-                    else if (gotRepo.containsKey(repo)) { if (p.contains("new:" + repo)) ed.remove(k); /* offline: the entry from dismissal; none: stays dismissed, retry online */ }
+                    else if (gotRepo.containsKey(repo)) {
+                        if (p.contains("new:" + repo)) ed.remove(k);      /* offline: the entry from dismissal */
+                        else if (noGame.contains(repo)) ed.remove(k);     /* no release to prefer: the bundled copy is the only one */
+                        /* else offline with nothing kept: stays dismissed, retry online */
+                    }
                     else ed.remove(k).remove("new:" + repo);     /* the entry kept at dismissal is stale; the found list is newer */
                 }
             ed.remove("newAt2").remove("newAt14").remove("searchAt162").apply();
         }
+        java.util.Set<String> del = new java.util.HashSet<>(p.getStringSet("cat:hiddenDeleted", new java.util.HashSet<>()));   /* removed with their file too */
+        if (!del.isEmpty()) {
+            StringBuilder keep = new StringBuilder();
+            for (String d : p.getString("cat:hidden", "").split("\n")) if (!d.isEmpty() && !del.contains(d)) keep.append(keep.length() > 0 ? "\n" : "").append(d);
+            p.edit().putString("cat:hidden", keep.toString()).apply();      /* no longer hidden in the Get games list */
+        }
+        restoreDeleted(p, del);
     }
 
     /** Copies the bundled catalogue's games (those with a repo and a bundled file) into "cat:bundled", once per app version. */
@@ -586,6 +601,25 @@ final class Updates {
             }
         }
         String tag = Uri.decode(u.substring(at + 5));
+        JSONObject rel = releaseAssets(full, tag);
+        JSONArray ra = rel.getJSONArray("assets");
+        boolean hasGame = false;
+        for (int i = 0; i < ra.length(); i++) {
+            String an = ra.getJSONObject(i).optString("name", "").toLowerCase(Locale.ROOT);
+            if (an.endsWith(".chg") || an.endsWith(".chgame")) hasGame = true;
+        }
+        if (!hasGame) {         /* a release without a game: the repo's own files */
+            try {
+                JSONObject g = rootGame(full);
+                if (g != null) return g;
+            } catch (IOException ex) {
+                throw new RootFail(ex);
+            }
+        }
+        return rel;
+    }
+
+    private static JSONObject releaseAssets(String full, String tag) throws IOException, org.json.JSONException {
         String html = fetch("https://github.com/" + full + "/releases/expanded_assets/" + Uri.encode(tag));
         JSONArray assets = new JSONArray();
         java.util.Set<String> seen = new java.util.HashSet<>();
@@ -623,12 +657,30 @@ final class Updates {
         java.util.regex.Matcher oid = java.util.regex.Pattern.compile("\"currentOid\":\"([0-9a-f]{40})\"").matcher(html);
         if (!oid.find()) return null;
         String sha = oid.group(1);
-        java.util.regex.Matcher m = java.util.regex.Pattern.compile("/blob/[^/\"]+/([^/\"?]+\\.chg)\"", java.util.regex.Pattern.CASE_INSENSITIVE).matcher(html);
+        JSONObject g = rootScan(full, sha, "", html, want);
+        if (g != null) return g;
+        for (String dir : new String[] { "dist", "release", "releases", "build", "bin", "games", "out" }) {
+            String page;
+            try {
+                page = fetch("https://github.com/" + full + "/tree/" + sha + "/" + dir);
+            } catch (IOException ex) {
+                if (String.valueOf(ex).contains("HTTP 404")) continue;      /* no such folder: normal */
+                throw ex;
+            }
+            g = rootScan(full, sha, dir + "/", page, want);
+            if (g != null) return g;
+        }
+        return null;
+    }
+
+    /** The .chg files linked on a folder page (dir "" or "name/"): the first of a sane size, release-shaped. */
+    private static JSONObject rootScan(String full, String sha, String dir, String html, String want) throws IOException, org.json.JSONException {
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile("/blob/[^/\"]+/" + java.util.regex.Pattern.quote(dir) + "([^/\"?]+\\.chg)\"", java.util.regex.Pattern.CASE_INSENSITIVE).matcher(html);
         java.util.Set<String> seen = new java.util.HashSet<>();
         while (m.find() && seen.size() < 4) {
             String raw = m.group(1), name = Uri.decode(raw);
             if (!seen.add(raw) || Files.safeName(name) == null || (want != null && !name.equalsIgnoreCase(want))) continue;
-            String url = "https://raw.githubusercontent.com/" + full + "/" + sha + "/" + raw;
+            String url = "https://raw.githubusercontent.com/" + full + "/" + sha + "/" + dir + raw;
             long size;
             HttpURLConnection h = CatalogueActivity.open(url);
             try {

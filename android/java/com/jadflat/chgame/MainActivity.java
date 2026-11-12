@@ -53,7 +53,7 @@ import java.util.concurrent.Executors;
  * Options, where everything else lives.
  */
 public class MainActivity extends Activity {
-    static final String VERSION = "2.43";
+    static final String VERSION = "2.47";
     static final String PREFS = "chgame";
 
     private SharedPreferences prefs;
@@ -1053,6 +1053,7 @@ public class MainActivity extends Activity {
         final boolean kept = keepFirst >= 0;
         int sr = row;
         if (kept) { top = keepTop; sr = Math.min(keepFirst, rows.size() - 1); }   /* an X toggle: the scroll stays */
+        else if (row == 1 && headerAbove(row)) top = Math.max(top, Ui.dp(this, 40));   /* the first section's header stays in view (grouping toggled) */
         keepFirst = -1;
         final int ft = top, fr = sr;
         list.setSelectionFromTop(fr, ft);

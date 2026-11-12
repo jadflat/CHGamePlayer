@@ -34,7 +34,7 @@ final class Pins {
     private Pins() { }
 
     private static final Pattern LINK = Pattern.compile("/releases/download/[^/\"]+/([^\"?/]+)\"");
-    private static final Pattern RAW_URL = Pattern.compile("https://raw\\.githubusercontent\\.com/([\\w.-]+/[\\w.-]+)/([0-9a-f]{40})/([^/?#]+)");
+    private static final Pattern RAW_URL = Pattern.compile("https://raw\\.githubusercontent\\.com/([\\w.-]+/[\\w.-]+)/([0-9a-f]{40})/([^/?#]+(?:/[^/?#]+){0,2})");
     private static final Pattern DIGEST = Pattern.compile("sha256:([0-9a-fA-F]{64})");
     private static final Pattern RELEASE_URL = Pattern.compile(
             "^https://github\\.com/([\\w.-]+/[\\w.-]+)/releases/download/([^/]+)/([^/?#]+)$");
@@ -174,7 +174,8 @@ final class Pins {
         if (p == null && url != null) {         /* a file committed in a repo, addressed by its commit: no published checksum, accepted (see the class comment) */
             Matcher r = RAW_URL.matcher(url);
             if (r.matches() && (pinned == null || pinned.isEmpty())) {
-                String fn = unescape(r.group(3));
+                String fp = r.group(3);
+                String fn = unescape(fp.substring(fp.lastIndexOf('/') + 1));
                 if (fn == null || fn.isEmpty()) return "the file's name could not be read: not installed";
                 if (seen == null || seen.length() != 64) return "the file could not be checked";
                 /* trust on first use, as for releases: the same commit and name must always give the same bytes */
