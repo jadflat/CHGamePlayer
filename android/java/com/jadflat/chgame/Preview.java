@@ -177,7 +177,7 @@ final class Preview {
             String t = p.getString("tree", null);
             if (t == null) return;
             Cart c = Cart.read(a.getContentResolver(), e.uri);
-            Updates.syncData(a, p, android.net.Uri.parse(t), fileName, c == null ? null : c.dats);
+            Updates.syncData(a, p, android.net.Uri.parse(t), fileName, c == null ? null : c.dats, c == null ? null : c.version, false);      /* no package download here: the play does it */
         } catch (Exception ignored) { }
     }
 

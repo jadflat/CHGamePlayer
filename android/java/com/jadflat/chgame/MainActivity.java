@@ -53,7 +53,7 @@ import java.util.concurrent.Executors;
  * Options, where everything else lives.
  */
 public class MainActivity extends Activity {
-    static final String VERSION = "2.47";
+    static final String VERSION = "2.48";
     static final String PREFS = "chgame";
 
     private SharedPreferences prefs;
@@ -1890,6 +1890,35 @@ public class MainActivity extends Activity {
         if (syncing) { Saves.toast(this, "Updating… please wait"); return; }   /* a second tap while files are fetched */
         syncing = true;
         final Uri uri0 = e.uri;
+        final boolean[] done = {false};         /* UI thread: the wait is over (finished, cancelled or out of time) */
+        final CardDialog[] wait = {null};
+        final View root = getWindow().getDecorView();
+        /* Cancel, Back or the time limit: the sync is told to stop and the game goes on to the missing-files check at once */
+        final Runnable cut = () -> {
+            if (done[0]) return;
+            Updates.PLAY_GEN.incrementAndGet();
+            endPlayWait(done, wait);
+            new Thread(() -> {
+                List<String> m = new ArrayList<>();
+                try {
+                    Cart c = known;
+                    if (c == null) try { c = Cart.read(getContentResolver(), uri0); } catch (Exception ignored) { }
+                    m = missingDats(c, fn0);
+                } catch (RuntimeException ignored) { }
+                final List<String> gone = m;
+                runOnUiThread(() -> playFound(uri0, gone));
+            }, "play-cut").start();
+        };
+        /* a sync longer than a moment shows a card with Cancel (Back too) */
+        final Runnable showWait = () -> {
+            if (done[0] || isFinishing()) return;
+            wait[0] = new CardDialog.Builder(this).setTitle(displayTitle(e)).setMessage("Updating… please wait")
+                    .setNegativeButton("Cancel", (d, w) -> cut.run())
+                    .setOnCancelListener(d -> cut.run())
+                    .show();
+        };
+        root.postDelayed(showWait, 800);
+        root.postDelayed(cut, Updates.PLAY_BUDGET);
         new Thread(() -> {      /* the cart, the card files it needs (fetched first if missing), then what is still missing:
                                    all off the screen's thread (the folder may be slow) */
             List<String> missing = new ArrayList<>();
@@ -1899,19 +1928,34 @@ public class MainActivity extends Activity {
                     try { cart = Cart.read(getContentResolver(), uri0); } catch (Exception ignored) { }
                 }
                 Uri t = tree();
-                if (t != null) Updates.syncData(this, prefs, t, fn0, cart == null ? null : cart.dats);
+                if (t != null) Updates.syncData(this, prefs, t, fn0, cart == null ? null : cart.dats, cart == null ? null : cart.version, true);
                 missing = missingDats(cart, fn0);
             } catch (RuntimeException ignored) {
                 /* the check could not be made: the game starts as it did before the check existed */
             } finally {
                 final List<String> gone = missing;
                 runOnUiThread(() -> {
-                    syncing = false;
-                    if (isFinishing()) return;
-                    for (int i = 0; i < games.size(); i++) if (games.get(i).uri.equals(uri0)) { playChecked(i, gone); break; }
+                    root.removeCallbacks(showWait);
+                    root.removeCallbacks(cut);
+                    if (done[0]) return;        /* cancelled or out of time: already answered */
+                    endPlayWait(done, wait);
+                    playFound(uri0, gone);
                 });
             }
         }).start();
+    }
+
+    /** Play's wait is over: the card goes, Play may be pressed again. */
+    private void endPlayWait(boolean[] done, CardDialog[] wait) {
+        done[0] = true;
+        syncing = false;
+        if (wait[0] != null) { try { wait[0].dismiss(); } catch (RuntimeException ignored) { } wait[0] = null; }
+    }
+
+    /** The game at uri (if still listed) starts, or says which card files are missing. */
+    private void playFound(Uri uri, List<String> missing) {
+        if (isFinishing()) return;
+        for (int i = 0; i < games.size(); i++) if (games.get(i).uri.equals(uri)) { playChecked(i, missing); break; }
     }
 
     private boolean syncing;

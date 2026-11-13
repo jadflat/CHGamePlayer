@@ -38,7 +38,6 @@ final class Pins {
     private static final Pattern DIGEST = Pattern.compile("sha256:([0-9a-fA-F]{64})");
     private static final Pattern RELEASE_URL = Pattern.compile(
             "^https://github\\.com/([\\w.-]+/[\\w.-]+)/releases/download/([^/]+)/([^/?#]+)$");
-    private static final Map<String, Map<String, String>> pages = new HashMap<>();
 
     static MessageDigest sha() {
         try {
@@ -106,7 +105,7 @@ final class Pins {
             int nd = d.find(at) ? d.start() : -1;
             if (nl < 0 && nd < 0) break;
             if (nl >= 0 && (nd < 0 || nl < nd)) {
-                String n = unescape(l.group(1));
+                String n = unescape(l.group(1).replace("&amp;", "&"));      /* the same key as linked() */
                 name = n == null ? null : n.toLowerCase(Locale.ROOT);
                 at = l.end();
             } else {
@@ -140,29 +139,68 @@ final class Pins {
         return "pin:" + repo.toLowerCase(Locale.ROOT) + "|" + tag + "|" + name.toLowerCase(Locale.ROOT);
     }
 
-    /** Blocking: the digests GitHub publishes for one release (cached for the run); empty if the page cannot be read. */
-    static Map<String, String> published(String repo, String tag) {
+    /** One release's expanded_assets page: found false for a 404 (no such tag). */
+    static final class Page {
+        final boolean found;
+        final Map<String, String> digests, links;      /* lower-case name -> digest / -> the name as linked (URL form) */
+        final long time;
+        Page(boolean found, Map<String, String> digests, Map<String, String> links) {
+            this.found = found;
+            this.digests = digests;
+            this.links = links;
+            time = android.os.SystemClock.elapsedRealtime();
+        }
+    }
+
+    private static final Map<String, Page> pages = new HashMap<>();
+    private static final long EMPTY_KEEP = 60_000L;     /* a 404, or a page with no digest yet, is read again after this */
+    private static final long PAGE_KEEP = 300_000L;     /* a page with digests */
+
+    /** Blocking: one release's page, cached 5 minutes (a 404 or one with no digest only a minute); null when it could not be read (not cached). */
+    static Page page(String repo, String tag) {
         String k = repo.toLowerCase(Locale.ROOT) + "|" + tag;
         synchronized (pages) {
-            Map<String, String> got = pages.get(k);
-            if (got != null) return got;
+            Page got = pages.get(k);
+            if (got != null && android.os.SystemClock.elapsedRealtime() - got.time
+                    < (got.found && !got.digests.isEmpty() ? PAGE_KEEP : EMPTY_KEEP)) return got;
         }
-        Map<String, String> got = new HashMap<>();
+        Page got;
         try {
             HttpURLConnection h = CatalogueActivity.open("https://github.com/" + repo + "/releases/expanded_assets/"
                     + android.net.Uri.encode(tag));
             try (InputStream in = h.getInputStream()) {
-                got = parseDigests(CatalogueActivity.readAll(in, 2 << 20));
+                String html = CatalogueActivity.readAll(in, 2 << 20);
+                Map<String, String> names = new HashMap<>();
+                for (Matcher m = LINK.matcher(html); m.find(); ) {
+                    String raw = m.group(1).replace("&amp;", "&"), n = unescape(raw);
+                    if (n != null) names.put(n.toLowerCase(Locale.ROOT), raw);
+                }
+                got = new Page(true, parseDigests(html), names);
             } finally {
                 h.disconnect();
             }
-        } catch (IOException | RuntimeException e) {
-            return got;         /* not cached: tried again next time */
+        } catch (IOException e) {
+            if (!"HTTP 404".equals(e.getMessage())) return null;     /* not cached: tried again next time */
+            got = new Page(false, new HashMap<>(), new HashMap<>());
+        } catch (RuntimeException e) {
+            return null;
         }
         synchronized (pages) {
             pages.put(k, got);
         }
         return got;
+    }
+
+    /** Blocking: the digests GitHub publishes for one release; empty if the page cannot be read or is not there. */
+    static Map<String, String> published(String repo, String tag) {
+        Page p = page(repo, tag);
+        return p == null ? new HashMap<>() : p.digests;
+    }
+
+    /** Blocking: lower-case file name -> its name as the release page links it (URL form), from the same page read. */
+    static Map<String, String> linked(String repo, String tag) {
+        Page p = page(repo, tag);
+        return p == null ? new HashMap<>() : p.links;
     }
 
     /**

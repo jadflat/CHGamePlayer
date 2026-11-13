@@ -4,6 +4,7 @@ import android.content.ContentResolver;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.net.Uri;
+import android.util.Log;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -768,8 +769,11 @@ final class Updates {
                 JSONArray games = new JSONObject(CatalogueActivity.readAll(in, 1 << 20)).getJSONArray("games");
                 for (int i = 0; i < games.length(); i++) {
                     JSONObject g = games.getJSONObject(i);
-                    known.add(g.optString("repo", ""));
                     JSONArray f = g.optJSONArray("files");
+                    for (int k = 0; f != null && k < f.length(); k++) {      /* a map-only entry (card files' repo, no download) still lets the search offer it */
+                        JSONObject x = f.optJSONObject(k);
+                        if (x != null && (!x.optString("url").isEmpty() || !x.optString("asset").isEmpty())) { known.add(g.optString("repo", "")); break; }
+                    }
                     for (int k = 0; f != null && k < f.length(); k++) known.add(repoOfUrl(f.getJSONObject(k).optString("url", "")));
                 }
             } catch (Exception ex) { /* not there */ }
@@ -2158,21 +2162,101 @@ final class Updates {
 
     /** Blocking, quiet: the card files a game needs (its .DAT names, and the catalogue's extra files) into the
         games folder where they are missing or differ from the release's (or the app's own copy), once per game version. */
-    static void syncData(Context c, SharedPreferences prefs, Uri tree, String file, java.util.Collection<String> dats) {
+    static void syncData(Context c, SharedPreferences prefs, Uri tree, String file, java.util.Collection<String> dats, String cartVer, boolean play) {
         /* one sync per game at a time (a preview and a play of the same game wait for each other), but never behind
            another game's download, nor holding the lock the API rate limiter uses */
+        int gen = PLAY_GEN.get();       /* taken before the lock: a cancel while waiting counts */
+        long stop = android.os.SystemClock.elapsedRealtime() + PLAY_BUDGET;
         Files.PathLock lock = Files.PathLock.take("data:" + file.toUpperCase(Locale.ROOT));
         try {
             lock.lock();
-            try { syncDataLocked(c, prefs, tree, file, dats); } finally { lock.unlock(); }
+            try { syncDataLocked(c, prefs, tree, file, dats, cartVer, play, gen, stop); } finally { lock.unlock(); }
         } finally {
             lock.release();
         }
     }
 
-    private static void syncDataLocked(Context c, SharedPreferences prefs, Uri tree, String file, java.util.Collection<String> dats) {
+    /** repo|version -> the release tag a hand-copied game's own header version names ("" when neither "v"+version nor version is a release): definite answers only. */
+    private static final java.util.concurrent.ConcurrentHashMap<String, String> CART_TAGS = new java.util.concurrent.ConcurrentHashMap<>();
+    /** repo|version -> when its release pages could not be read (elapsedRealtime): asked again after a minute. */
+    private static final java.util.concurrent.ConcurrentHashMap<String, Long> CART_FAIL = new java.util.concurrent.ConcurrentHashMap<>();
+    /** repo|version -> when no release of that version was found (elapsedRealtime): asked again after 5 minutes. */
+    private static final java.util.concurrent.ConcurrentHashMap<String, Long> CART_NONE = new java.util.concurrent.ConcurrentHashMap<>();
+    /** game (upper case) -> when a preview sync last left a package to the play (elapsedRealtime): previews wait a minute. */
+    private static final java.util.concurrent.ConcurrentHashMap<String, Long> PREVIEW_SKIP = new java.util.concurrent.ConcurrentHashMap<>();
+
+    private static boolean cartVerOk(String ver) {
+        return ver != null && ver.matches("[vV]?[\\w.+-]{1,24}");
+    }
+
+    /** Blocking: the release of the game's own version ("v"+ver, else ver); "" when there is none (definite); null when it could not be read or the version is unknown (cartVerOk tells). So a game with no "got:" does not take the latest release's card files. */
+    private static String cartTag(String repo, String ver) {
+        if (repo == null || !cartVerOk(ver)) return null;
+        String bare = ver.replaceFirst("^[vV]", ""), k = repo + "|" + bare, t = CART_TAGS.get(k);
+        if (t == null) {
+            long now = android.os.SystemClock.elapsedRealtime();
+            Long n = CART_NONE.get(k);
+            if (n != null && now - n < 300_000L) return "";
+            Long f = CART_FAIL.get(k);
+            if (f != null && now - f < 60_000L) return null;
+            t = spell(repo, "v" + bare);
+            if (t == null) { CART_FAIL.put(k, now); return null; }     /* a failure is not an answer */
+            CART_FAIL.remove(k);
+            if (t.isEmpty()) { CART_NONE.put(k, now); return ""; }
+            CART_TAGS.put(k, t);
+        }
+        return t;
+    }
+
+    /** Blocking: the spelling of a release tag that exists (tag, else with/without its v): "" when neither is a release (404), null when a page could not be read. */
+    static String spell(String repo, String tag) {
+        boolean failed = false;
+        for (String t : new String[] { tag, tag.startsWith("v") ? tag.substring(1) : "v" + tag }) {
+            Pins.Page p = Pins.page(repo, t);
+            if (p == null) failed = true;
+            else if (p.found) return t;
+        }
+        return failed ? null : "";
+    }
+
+    /** A real network failure (no connection, time-out, unknown host, TLS): stop asking for this sync. Not an HTTP answer, a back-off or a bad address. */
+    static boolean netDown(IOException e) {
+        return e instanceof java.net.SocketException || e instanceof java.net.SocketTimeoutException
+                || e instanceof java.net.UnknownHostException || e instanceof javax.net.ssl.SSLException;
+    }
+
+    /** One sync's state, shared by its card files. */
+    private static final class Sync {
+        boolean play;           /* a Play-triggered sync: may download packages (a preview does not) */
+        boolean down;           /* the network failed: the remaining files take only the app's copy */
+        boolean read;           /* the release's page was read (or both spellings are 404) */
+        boolean skipped;        /* a preview left a package download to the play: no failure recorded */
+        boolean unsure, absent; /* per file: an answer that may change soon / the file is nowhere in the release */
+        boolean noDigest;       /* per file: its package is listed on a read page with no published digest: hourly */
+        long until;             /* the package budget's end (elapsedRealtime), set at the first package */
+        java.util.Set<String> want;     /* the upper-case paths this sync wants: all a package keeps */
+        int gen;                /* PLAY_GEN when a Play sync began: a cancel bumps it */
+        long stop;              /* a Play sync's end (elapsedRealtime) */
+        java.util.Set<String> pkgs = new java.util.HashSet<>();     /* the packages this sync cached: dropped when it ends */
+        /** A Play sync that was cancelled or ran out of its PLAY_BUDGET. */
+        boolean stopped() { return play && (PLAY_GEN.get() != gen || android.os.SystemClock.elapsedRealtime() >= stop); }
+        /** The package budget is over, or the sync stopped. */
+        boolean out() { return android.os.SystemClock.elapsedRealtime() >= until || stopped(); }
+    }
+
+    /** Bumped to cancel the running Play syncs (Back, or Play's own time limit). */
+    static final java.util.concurrent.atomic.AtomicInteger PLAY_GEN = new java.util.concurrent.atomic.AtomicInteger();
+    static final long PLAY_BUDGET = 60_000L;        /* a whole Play sync (loose files and packages) */
+
+    private static void syncDataLocked(Context c, SharedPreferences prefs, Uri tree, String file, java.util.Collection<String> dats, String cartVer, boolean play, int gen, long stop) {
+        Sync s = new Sync();
+        s.play = play;
+        s.gen = gen;
+        s.stop = stop;
         try {
+            if (s.stopped()) return;
             if (tree == null) return;
+            purgePkgs();
             String u = file.toUpperCase(Locale.ROOT);
             String repo = repoFor(c, prefs, file);
             Map<String, String> bundled = bundledFiles(c, repo);
@@ -2186,10 +2270,14 @@ final class Updates {
             if (repo != null && (ft == null || got0 != null && !got0.isEmpty() && !got0.equals(ft))
                     && now - prefs.getLong("filesTry:" + u, 0) > 3600_000L) {
                 /* no list yet (installed before it was kept), or the game was updated since: read its release (failures: once an hour) */
-                java.util.List<String> sdf = releaseFiles(repo, got0);
+                String lt;
+                boolean noRead;     /* no such release, or it could not be read: never the latest instead */
+                if (got0 != null && !got0.isEmpty()) { lt = spell(repo, got0); noRead = lt == null || lt.isEmpty(); }
+                else { lt = cartTag(repo, cartVer); noRead = lt != null ? lt.isEmpty() : cartVerOk(cartVer); }     /* hand-copied: its own version's release */
+                java.util.List<String> sdf = noRead ? null : releaseFiles(repo, lt);
                 if (sdf != null) all = Files.list(c.getContentResolver(), tree);
                 String text = sdf == null ? null : gameText(c.getContentResolver(), all, file);
-                if (sdf != null) keepFiles(prefs, file, text != null ? got0 : "", sdf, text);      /* unreadable game: .DAT-like only, tag unknown */
+                if (sdf != null) keepFiles(prefs, file, text != null ? (got0 != null && !got0.isEmpty() ? got0 : lt) : "", sdf, text);      /* unreadable game: .DAT-like only, tag unknown */
                 if (sdf == null || text == null) prefs.edit().putLong("filesTry:" + u, now).apply();      /* read again in an hour */
             }
             if (repo != null && !prefs.contains("intro:" + u) && now - prefs.getLong("introTry:" + u, 0) > 3600_000L) markIntro(prefs, file, repo);
@@ -2214,31 +2302,302 @@ final class Updates {
             if (all == null) all = Files.list(cr, tree);
             boolean missing = !MainActivity.missingFrom(all, want.keySet(), new java.util.HashSet<>()).isEmpty();
 
-            if (!missing && (tag == null ? "latest" : tag).equals(prefs.getString("datok:" + u, ""))) return;
-            if (System.currentTimeMillis() - prefs.getLong("datfail:" + u, 0) < 3600_000L) return;
-            boolean ok = true;
-            for (Map.Entry<String, String> w : want.entrySet()) {
-                String n = w.getValue(), k = w.getKey();
+            String tv = tag == null ? "latest" : tag;
+            String failKey = "datfail:" + u + "|" + tv;     /* per version: a new release is tried at once */
+            if (!missing && tv.equals(prefs.getString("datok:" + u, ""))) return;
+            Long ps = PREVIEW_SKIP.get(u);
+            if (!play && ps != null && android.os.SystemClock.elapsedRealtime() - ps < 60_000L) return;     /* a preview left it to the play a moment ago */
+            long failAgo = System.currentTimeMillis() - prefs.getLong(failKey, 0);     /* negative: the clock went back, treated as expired */
+            if (failAgo >= 0 && failAgo < prefs.getLong(failKey + "|w", missing ? 60_000L : 3600_000L)) return;     /* a missing file is tried again soon (one nowhere in the release hourly), the rest hourly */
+            boolean ok = true, absentOnly = true;
+            s.want = new java.util.HashSet<>(want.keySet());
+            String rtag = tag;              /* the release to read: the installed one, else the latest, asked once per sync */
+            boolean noRelease = false, noRecord = false;     /* the game's version has no release (app copy only) / it could not be asked (latest, not recorded) */
+            if (missing && rtag == null && repo != null) {
+                String ct = cartTag(repo, cartVer);
+                if (ct != null) { if (ct.isEmpty()) noRelease = true; else rtag = ct; }
+                else noRecord = cartVerOk(cartVer);
+            }
+            if (noRelease) s.read = true;      /* a definite answer: what the app lacks is absent */
+            if (missing && rtag == null && repo != null && !noRelease) {
                 try {
-                    boolean replace = tag != null && Files.isGameData(k);     /* other files may hold the player's data */
-                    ok &= syncOne(c, cr, tree, all, repo, tag, n, bundled.get(k.substring(k.lastIndexOf('/') + 1)), replace);
-                } catch (Exception ex) {
-                    ok = false;
+                    String t = probeTag(repo);
+                    if (!"-".equals(t)) rtag = t;
+                } catch (IOException ex) {
+                    if (netDown(ex)) s.down = true;
                 }
             }
+            if (rtag != null && repo != null && !s.down) {      /* the tag's spelling (with or without the v), resolved once for the whole sync */
+                String sp = spell(repo, rtag);
+                if (sp != null) {
+                    s.read = true;
+                    rtag = sp.isEmpty() ? null : sp;
+                }
+            }
+            for (Map.Entry<String, String> w : want.entrySet()) {
+                String n = w.getValue(), k = w.getKey();
+                s.unsure = false;
+                s.absent = false;
+                s.noDigest = false;
+                if (s.stopped()) return;        /* cancelled or out of time: nothing recorded, the next Play tries again */
+                try {
+                    boolean replace = tag != null && Files.isGameData(k);     /* other files may hold the player's data */
+                    if (!syncOne(c, cr, tree, all, s.down || noRelease ? null : repo, rtag, n, bundled.get(k.substring(k.lastIndexOf('/') + 1)), replace, s)) {
+                        ok = false;
+                        if (!s.absent && !s.noDigest) absentOnly = false;
+                    }
+                } catch (Exception ex) {
+                    ok = false;
+                    absentOnly = false;
+                }
+            }
+            if (s.stopped()) return;
             SharedPreferences.Editor ed = prefs.edit();
-            if (ok) {
-                ed.remove("datfail:" + u);
-                ed.putString("datok:" + u, tag == null ? "latest" : tag);
-            } else {
-                ed.putLong("datfail:" + u, System.currentTimeMillis());
+            ed.remove("datfail:" + u);      /* the old, unversioned key */
+            if (s.skipped) PREVIEW_SKIP.put(u, android.os.SystemClock.elapsedRealtime());
+            else PREVIEW_SKIP.remove(u);
+            if (ok && !s.skipped && !noRecord) {        /* a preview that left a package, or a guessed latest, is not "current" */
+                for (String key : prefs.getAll().keySet()) if (key.startsWith("datfail:" + u + "|")) ed.remove(key);     /* every version's */
+                ed.putString("datok:" + u, tv);
+            } else if (!ok && !s.skipped) {        /* a preview that left the package to the play records nothing */
+                ed.putLong(failKey, System.currentTimeMillis());
+                if (absentOnly) ed.putLong(failKey + "|w", 3600_000L);     /* nowhere in the release: hourly */
+                else ed.remove(failKey + "|w");
             }
             ed.apply();
-        } catch (Exception ignored) { }
+        } catch (Exception ignored) {
+        } finally {
+            synchronized (PKGS) {       /* the bytes go once the sync that read them ends (failure answers stay, they are small) */
+                for (String k : s.pkgs) { Pkg p = PKGS.get(k); if (p != null && p.files != null) PKGS.remove(k); }
+            }
+        }
+    }
+
+    /** A release package read: its sdcard/ files (upper-case path under sdcard/ -> bytes; null when it could not be had), and how long that answer is kept. */
+    private static final class Pkg {
+        Map<String, byte[]> files;
+        java.util.Set<String> want;     /* the paths asked for when it was read: only those are kept */
+        long time, keep;
+    }
+
+    private static final long PKG_KEEP_OK = 60_000L;           /* one sync reads a package once; dropped when that sync ends */
+    private static final long PKG_KEEP_FAIL = 600_000L;        /* a definite failure: a missing file retried every minute does not download again */
+    private static final long PKG_KEEP_UNSURE = 30_000L;       /* a network failure, out of memory, no checksum yet: asked again soon */
+    private static final long PKG_BUDGET = 120_000L;           /* one sync's packages (waiting for another's download included) give up after this */
+    private static final int PKG_MAX = 16 << 20, PKG_SLOTS = 1, PKG_TRIES = 3;
+    /** Package cache, key repo|tag|name, least recently used first: at most PKG_SLOTS; expired ones are dropped by purgePkgs at the next sync or package call (an answer is kept up to PKG_KEEP_*). Guarded by itself, never held over the network; not the class lock (reserveApi and backOff use that one). */
+    private static final java.util.LinkedHashMap<String, Pkg> PKGS = new java.util.LinkedHashMap<>(4, 0.75f, true);
+    /** One download per package at a time (other games are not blocked); removed once the answer is cached. */
+    private static final java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.locks.ReentrantLock> PKG_LOCKS = new java.util.concurrent.ConcurrentHashMap<>();
+
+    private static void purgePkgs() {
+        synchronized (PKGS) {
+            long now = android.os.SystemClock.elapsedRealtime();
+            for (java.util.Iterator<Pkg> i = PKGS.values().iterator(); i.hasNext(); ) {
+                Pkg p = i.next();
+                if (now - p.time >= p.keep) i.remove();     /* expired: not kept in memory */
+            }
+        }
+    }
+
+    /** Blocking: one .chgame package's wanted sdcard/ files, checked against its release page's digest; null when it cannot be had (s.unsure when that may change soon). */
+    private static Map<String, byte[]> fetchPackage(Context c, String repo, String t, String raw, String name, Sync s) {
+        String key = repo + "|" + t + "|" + name;
+        java.util.concurrent.locks.ReentrantLock lock = PKG_LOCKS.computeIfAbsent(key, k -> new java.util.concurrent.locks.ReentrantLock());
+        try {
+            if (!lock.tryLock(Math.max(0, s.until - android.os.SystemClock.elapsedRealtime()), java.util.concurrent.TimeUnit.MILLISECONDS)) { s.unsure = true; return null; }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            s.unsure = true;
+            return null;
+        }
+        try {
+            purgePkgs();
+            synchronized (PKGS) {
+                Pkg p = PKGS.get(key);
+                if (p != null && (p.files == null || p.want.containsAll(s.want))) {      /* kept for other paths: read again */
+                    if (p.files == null && p.keep == PKG_KEEP_UNSURE) unsurePkg(repo, t, name, s);
+                    return p.files;
+                }
+            }
+            if (s.out()) { s.unsure = true; return null; }     /* out of time or cancelled: not cached, asked again next sync */
+            long[] keep = { PKG_KEEP_FAIL };
+            Pkg p = new Pkg();
+            p.want = s.want;
+            p.files = fetchPackageLocked(c, repo, t, raw, name, s, keep, s.want);
+            p.keep = p.files != null ? PKG_KEEP_OK : keep[0];
+            if (p.files == null && s.stopped()) { s.unsure = true; return null; }     /* cut short by Play's cancel or time limit: not cached */
+            if (p.files == null && p.keep == PKG_KEEP_UNSURE) unsurePkg(repo, t, name, s);
+            p.time = android.os.SystemClock.elapsedRealtime();
+            s.pkgs.add(key);
+            synchronized (PKGS) {
+                PKGS.put(key, p);
+                for (java.util.Iterator<String> i = PKGS.keySet().iterator(); PKGS.size() > PKG_SLOTS && i.hasNext(); ) {
+                    i.next();
+                    i.remove();     /* the least recently used */
+                }
+            }
+            return p.files;
+        } finally {
+            lock.unlock();
+            PKG_LOCKS.remove(key, lock);     /* a later caller finds the cache */
+        }
+    }
+
+    /** An unsure package answer; when its page was read and lists it with no digest, the sync backs off hourly (still unsure: no trust on first use). */
+    private static void unsurePkg(String repo, String t, String name, Sync s) {
+        s.unsure = true;
+        Pins.Page pg = Pins.page(repo, t);
+        if (pg != null && pg.found && pg.links.containsKey(name) && !pg.digests.containsKey(name)) s.noDigest = true;
+    }
+
+    private static Map<String, byte[]> fetchPackageLocked(Context c, String repo, String t, String raw, String name, Sync s, long[] keep, java.util.Set<String> want) {
+        java.io.File tmp = null;
+        try { return fetchPackageFile(c, repo, t, raw, name, s, keep, want, tmp = java.io.File.createTempFile("pkg", ".zip", c.getCacheDir())); }
+        catch (IOException e) { keep[0] = PKG_KEEP_UNSURE; return null; }      /* no temp file: unsure */
+        finally { if (tmp != null) tmp.delete(); }
+    }
+
+    /** The package is streamed to tmp (hashed on the way), never held whole in memory; only the wanted entries are. */
+    private static Map<String, byte[]> fetchPackageFile(Context c, String repo, String t, String raw, String name, Sync s, long[] keep, java.util.Set<String> want, java.io.File tmp) {
+        String seen;
+        HttpURLConnection h = null;
+        String key = repo + "|" + t + "|" + name;
+        /* the digest first (the page syncOne already read): no digest, no download */
+        Pins.Page pg = Pins.page(repo, t);
+        if (pg == null || pg.found && !pg.digests.containsKey(name)) {
+            keep[0] = PKG_KEEP_UNSURE;
+            Log.w("ChgPkg", key + ": unsure (" + (pg == null ? "release page not read" : "no published checksum yet") + "), not downloaded");
+            return null;
+        }
+        if (!pg.found) { Log.i("ChgPkg", key + ": release not found (404)"); return null; }
+        String pub = pg.digests.get(name);
+        try {
+            h = CatalogueActivity.open("https://github.com/" + repo + "/releases/download/" + Uri.encode(t) + "/" + raw);
+            InputStream in = h.getInputStream();
+            long cl = h.getContentLengthLong();
+            if (cl > PKG_MAX) { Log.w("ChgPkg", key + ": package over the " + (PKG_MAX >> 20) + " MB cap (" + cl + " bytes), not read"); return null; }
+            java.security.MessageDigest sum = Pins.sha();
+            long total = 0;
+            try (OutputStream out = new java.io.FileOutputStream(tmp)) {
+                byte[] buf = new byte[1 << 14];
+                for (int r; (r = in.read(buf)) > 0; ) {
+                    total += r;
+                    if (total > PKG_MAX) { Log.w("ChgPkg", key + ": package over the " + (PKG_MAX >> 20) + " MB cap, not read"); return null; }
+                    out.write(buf, 0, r);
+                    sum.update(buf, 0, r);
+                    if (s.out()) throw new IOException("out of time");
+                }
+            }
+            if (cl > 0 && total != cl) throw new IOException("short read");
+            seen = Pins.hex(sum.digest());
+        } catch (IOException e) {
+            if (!"HTTP 404".equals(e.getMessage())) keep[0] = PKG_KEEP_UNSURE;     /* a missing package is an answer */
+            if (keep[0] == PKG_KEEP_UNSURE) Log.w("ChgPkg", key + ": unsure (network): " + e);
+            else Log.i("ChgPkg", key + ": not found (404)");
+            return null;
+        } catch (RuntimeException | OutOfMemoryError e) {
+            if (e instanceof OutOfMemoryError) synchronized (PKGS) { PKGS.clear(); }
+            keep[0] = PKG_KEEP_UNSURE;
+            Log.w("ChgPkg", key + ": unsure (download): " + e);
+            return null;
+        } finally {
+            if (h != null) h.disconnect();
+        }
+        try {
+            /* checked against the digest on the page already read (no second fetch), trusted on first use as Pins.check does */
+            SharedPreferences prefs = c.getSharedPreferences(MainActivity.PREFS, Context.MODE_PRIVATE);
+            String k = Pins.key(repo, t, name);
+            if (Pins.verdict(null, pub, prefs.getString(k, null), seen) != null) { Log.w("ChgPkg", key + ": failed (checksum mismatch)"); return null; }     /* a real mismatch: definite */
+            prefs.edit().putString(k, seen.toLowerCase(Locale.ROOT)).apply();
+            Map<String, byte[]> files;
+            try (InputStream zin = new java.io.BufferedInputStream(new java.io.FileInputStream(tmp), 1 << 16)) { files = unzip(zin, want); }
+            Log.i("ChgPkg", key + ": found, " + files.size() + " sdcard/ files");
+            return files;
+        } catch (IOException e) {
+            Log.w("ChgPkg", key + ": failed (not a zip): " + e);
+            return null;        /* not a zip (ZipException): definite */
+        } catch (RuntimeException | OutOfMemoryError e) {
+            if (e instanceof OutOfMemoryError) synchronized (PKGS) { PKGS.clear(); }      /* free what is kept before saying unsure */
+            keep[0] = PKG_KEEP_UNSURE;
+            Log.w("ChgPkg", key + ": unsure (unpack): " + e);
+            return null;
+        }
+    }
+
+    /** A package's wanted sdcard/ files (want null: all), read in one pass: at the top, else under its one top folder (several such folders: ambiguous, none taken). An entry over the cap is skipped. */
+    private static Map<String, byte[]> unzip(InputStream zip, java.util.Set<String> want) throws IOException {
+        Map<String, byte[]> top = new HashMap<>(), nested = new HashMap<>();
+        String folder = null;
+        boolean many = false, sawTop = false;
+        long total = 0;
+        try (java.util.zip.ZipInputStream z = new java.util.zip.ZipInputStream(zip)) {
+            for (java.util.zip.ZipEntry e; (e = z.getNextEntry()) != null; ) {
+                if (e.isDirectory()) continue;
+                String en = e.getName().replace('\\', '/').toUpperCase(Locale.ROOT);
+                int sl = en.indexOf('/');
+                boolean atTop = en.startsWith("SDCARD/");
+                String rest;
+                if (atTop) rest = en.substring(7);
+                else if (sl > 0 && en.startsWith("SDCARD/", sl + 1)) {
+                    rest = en.substring(sl + 8);
+                    String f = en.substring(0, sl);
+                    if (folder == null) folder = f;
+                    else if (!folder.equals(f)) many = true;
+                } else continue;
+                if (rest.isEmpty()) continue;
+                if (atTop) sawTop = true;
+                if (want != null && !want.contains(rest)) continue;     /* only what the sync asks for is kept in memory */
+                long room = Math.min(8 << 20, PKG_MAX - total), size = e.getSize();
+                if (size > room) { Log.w("ChgPkg", en + ": entry over the 8 MB / package " + (PKG_MAX >> 20) + " MB cap, skipped"); continue; }
+                byte[] b;
+                if (size >= 0) {        /* read straight into its one array */
+                    b = new byte[(int) size];
+                    int n = 0;
+                    for (int r; n < b.length && (r = z.read(b, n, b.length - n)) > 0; ) n += r;
+                    if (n != b.length) throw new java.util.zip.ZipException("short entry");
+                } else {
+                    ByteArrayOutputStream f = new ByteArrayOutputStream();
+                    byte[] buf = new byte[1 << 14];
+                    boolean over = false;
+                    for (int r; (r = z.read(buf)) > 0; ) {
+                        f.write(buf, 0, r);
+                        if (f.size() > room) { over = true; break; }
+                    }
+                    if (over) { Log.w("ChgPkg", en + ": entry over the 8 MB / package " + (PKG_MAX >> 20) + " MB cap, skipped"); continue; }     /* the rest of it is skipped by getNextEntry */
+                    b = f.toByteArray();
+                }
+                total += b.length;
+                (atTop ? top : nested).put(rest, b);
+            }
+        }
+        return sawTop ? top : many ? new HashMap<>() : nested;
+    }
+
+    /** Blocking: a card file out of the release's .chgame package (its sdcard/<path> entry), or null. */
+    private static InputStream packageEntry(Context c, String repo, String tag, String path, Sync s) {
+        if (repo == null || tag == null || tag.isEmpty()) return null;
+        purgePkgs();
+        String want = path.replace('\\', '/').toUpperCase(Locale.ROOT);
+        String base = (repo.substring(repo.lastIndexOf('/') + 1) + ".chgame").toLowerCase(Locale.ROOT);
+        Map<String, String> linked = Pins.linked(repo, tag);       /* the page the sync already read (tag spelled once per sync) */
+        java.util.List<String> names = new java.util.ArrayList<>();
+        for (String n : linked.keySet()) if (n.endsWith(".chgame")) names.add(n);
+        if (names.isEmpty()) return null;
+        if (!s.play) { s.skipped = true; s.unsure = true; return null; }      /* a preview does not download packages: the play does */
+        if (s.until == 0) s.until = Math.min(android.os.SystemClock.elapsedRealtime() + PKG_BUDGET, s.stop);     /* within Play's whole budget */
+        java.util.Collections.sort(names);
+        if (names.remove(base)) names.add(0, base);      /* the one named after the repo first, then one that has the file */
+        for (int i = 0; i < names.size() && i < PKG_TRIES; i++) {
+            Map<String, byte[]> files = fetchPackage(c, repo, tag, linked.get(names.get(i)), names.get(i), s);
+            byte[] b = files == null ? null : files.get(want);
+            if (b != null) return new java.io.ByteArrayInputStream(b);      /* the cached bytes, not copied */
+        }
+        return null;
     }
 
     /** One card file: true if it is now current (or there is nothing to get it from while one is there). */
-    private static boolean syncOne(Context c, ContentResolver cr, Uri tree, java.util.List<Files.Entry> all, String repo, String tag, String name, String asset, boolean replace) throws IOException {
+    private static boolean syncOne(Context c, ContentResolver cr, Uri tree, java.util.List<Files.Entry> all, String repo, String tag, String name, String asset, boolean replace, Sync s) throws IOException {
         String path = name;
         name = path.substring(path.lastIndexOf('/') + 1);
         if (Files.safeName(name) == null || path.contains("..") || path.contains("\\")) return false;
@@ -2249,34 +2608,32 @@ final class Updates {
         InputStream in = null;
         long len = -1;
         String from = null;             /* the release address actually read: its checksum is checked before writing */
-        if (repo != null) {
-            if (tag == null) {          /* the latest release, by its tag: a checksum belongs to one release */
+        if (repo != null && tag != null) {
+            /* tag: the installed release, else the latest (asked once per sync by the caller), spelled once per sync; none: nothing remote */
+            Pins.Page pg = Pins.page(repo, tag);
+            /* the release page lists its files: one it does not list is not asked for (an unread page: asked anyway) */
+            if (pg == null || pg.links.containsKey(name.toLowerCase(Locale.ROOT))) {
                 try {
-                    String t = probeTag(repo);
-                    if (!"-".equals(t)) tag = t;
-                } catch (IOException ex) {
-                    /* no tag: nothing remote */
-                }
-            }
-            String[] urls = tag == null ? new String[0]      /* tags are stored with or without the v */
-                    : new String[] { "download/" + Uri.encode(tag), "download/v" + Uri.encode(tag) };
-            for (String u : urls) {      /* the installed version's release */
-                try {
-                    from = "https://github.com/" + repo + "/releases/" + u + "/" + Uri.encode(name);
+                    from = "https://github.com/" + repo + "/releases/download/" + Uri.encode(tag) + "/" + Uri.encode(name);
                     h = CatalogueActivity.open(from);
                     in = h.getInputStream();
                     len = h.getContentLengthLong();
-                    break;
                 } catch (IOException ex) {
                     if (h != null) h.disconnect();
                     h = null;
                     in = null;
                     from = null;
+                    if (netDown(ex)) s.down = true;     /* no network: stop asking */
+                    else if (!"HTTP 404".equals(ex.getMessage())) s.unsure = true;
                 }
             }
         }
+        if (in == null && repo != null && tag != null && !s.down) in = packageEntry(c, repo, tag, path, s);     /* doc != null implies replace here (returned above). Not a loose release file: the release's .chgame package carries it under sdcard/ (and may replace an old copy) */
         if (in == null && doc == null && asset != null && !asset.isEmpty()) in = c.getAssets().open(asset);     /* the app's copy only fills a gap */
-        if (in == null) return doc != null;
+        if (in == null) {
+            if (doc == null && s.read && !s.down && !s.unsure) s.absent = true;      /* nowhere in the release: no loose file, no package entry */
+            return doc != null;
+        }
         java.io.File tmp = java.io.File.createTempFile("card", ".tmp", c.getCacheDir());
         try {
             boolean looksSame = false;     /* size and the first 4 KB agree: the whole file is compared once it is here */
@@ -2302,6 +2659,7 @@ final class Updates {
                 for (int r; (r = in.read(buf)) > 0; ) {
                     total += r;
                     if (total > (128L << 20)) throw new IOException("file too big");
+                    if (s.stopped()) throw new IOException("stopped");      /* Play cancelled or out of time: nothing written */
                     out.write(buf, 0, r);
                     sum.update(buf, 0, r);
                 }

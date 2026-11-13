@@ -1,3 +1,13 @@
 {
-  "games": []
+  "games": [
+    {
+      "name": "Midnight Pinball",
+      "repo": "juliendorra/chgame-pinball",
+      "files": [
+        {
+          "name": "MIDNIGHT.CHG"
+        }
+      ]
+    }
+  ]
 }
