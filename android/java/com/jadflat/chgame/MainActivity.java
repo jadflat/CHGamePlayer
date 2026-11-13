@@ -53,7 +53,7 @@ import java.util.concurrent.Executors;
  * Options, where everything else lives.
  */
 public class MainActivity extends Activity {
-    static final String VERSION = "2.48";
+    static final String VERSION = "2.49";
     static final String PREFS = "chgame";
 
     private SharedPreferences prefs;
@@ -570,8 +570,9 @@ public class MainActivity extends Activity {
             int fresh = 0;
             StringBuilder found = new StringBuilder();
             final java.util.List<String> freshRepos = new java.util.ArrayList<>();
+            Set<String> haveRepos = Updates.installedRepos(this, prefs, have);
             for (JSONObject n : Updates.newGames(prefs)) {
-                if (have.contains(Updates.newFile(n).toUpperCase(Locale.ROOT)) || !seen.add(n.optString("repo"))) continue;
+                if (have.contains(Updates.newFile(n).toUpperCase(Locale.ROOT)) || haveRepos.contains(n.optString("repo")) || !seen.add(n.optString("repo"))) continue;
                 if (n.optBoolean("quiet")) continue;        /* bundled games are in the list without a notice */
                 fresh++;
                 freshRepos.add(n.optString("repo"));
@@ -996,9 +997,10 @@ public class MainActivity extends Activity {
         });
         Set<String> have = new HashSet<>();
         for (Files.Entry e : found) have.add(fileName(e).toUpperCase(Locale.ROOT));
+        Set<String> haveRepos = Updates.installedRepos(this, prefs, have);     /* installed under another name: not new */
         for (JSONObject n : prefs.getBoolean("showNew", true) ? Updates.newGames(prefs) : new java.util.ArrayList<JSONObject>()) {
             String file = Updates.newFile(n);
-            if (!have.add(file.toUpperCase(Locale.ROOT))) continue;
+            if (haveRepos.contains(n.optString("repo")) || !have.add(file.toUpperCase(Locale.ROOT))) continue;
             if (hidden.contains(file)) {
                 hiddenCount++;
                 if (!showHidden) continue;

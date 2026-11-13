@@ -76,6 +76,17 @@ final class Updates {
         return s == null ? null : s[0];
     }
 
+    /** The repos of the installed game files (upper-case names): a release whose asset is named otherwise is still the same game. */
+    static Set<String> installedRepos(Context c, SharedPreferences prefs, java.util.Collection<String> upperNames) {
+        Map<String, String[]> src = sources(c, prefs);
+        Set<String> out = new java.util.HashSet<>();
+        for (String n : upperNames) { String[] s = src.get(n); if (s != null) out.add(s[0]); }
+        return out;
+    }
+
+    /** install()'s answer for a game already in the folder under another name: no bundled fallback, nothing written. */
+    static final String ALREADY = "already installed as ";
+
     private static void add(Map<String, String[]> out, String json) {
         try {
             JSONArray games = new JSONObject(json).getJSONArray("games");
@@ -1845,9 +1856,17 @@ final class Updates {
     /** Blocking: downloads a new game into the games folder; null when done, else what went wrong. */
     static String install(Context c, SharedPreferences prefs, Uri tree, JSONObject n) {
         String repo = n.optString("repo"), tag = n.optString("tag"), asset = n.optString("asset");
+        /* the repo's game is in the folder under another name (ATM-Soundtracks.CHG vs the release's -rev0.chg): no second copy */
+        String file = newFile(n);
+        for (Files.Entry e : Files.list(c.getContentResolver(), tree)) {
+            String nm = e.path.substring(e.path.lastIndexOf('/') + 1);
+            if (!Files.isGame(nm) || nm.equalsIgnoreCase(file) || !repo.equalsIgnoreCase(repoFor(c, prefs, nm))) continue;
+            prefs.edit().remove("new:" + repo).putBoolean("newdone:" + repo, true).apply();
+            return ALREADY + nm;
+        }
         if (n.has("local")) return installLocal(c, prefs, tree, n);
         String err = installRemote(c, prefs, tree, n, repo, tag, asset);
-        if (err == null) return null;
+        if (err == null || err.startsWith(ALREADY)) return err;
         JSONObject own = bundledCopy(c, repo);        /* the download failed: the copy inside the app, if it has one */
         return own == null ? err : installLocal(c, prefs, tree, own);
     }
@@ -1902,12 +1921,21 @@ final class Updates {
                 data = ChgPackage.toChg(data, ChgPackage.coverFor(c, null, newFile(n)));
                 if (data == null) return "the package holds no game for this board";
             }
-            if (Cart.ident(data, Math.min(data.length, Cart.HEADER)) == null) return "not a game file";
+            String[] id = Cart.ident(data, Math.min(data.length, Cart.HEADER));
+            if (id == null) return "not a game file";
             ContentResolver cr = c.getContentResolver();
             Uri root = android.provider.DocumentsContract.buildDocumentUriUsingTree(tree,
                     android.provider.DocumentsContract.getTreeDocumentId(tree));
             String file = newFile(n);
             Uri doc = existing(cr, tree, file);
+            if (doc == null) for (Files.Entry e : Files.list(cr, tree)) {      /* the same cart (title + author) under another name: no twin */
+                String nm = e.path.substring(e.path.lastIndexOf('/') + 1);
+                if (!Files.isGame(nm) || e.path.indexOf('/') >= 0) continue;
+                String[] other = Cart.ident(cr, e.uri);
+                if (other == null || !Cart.key(other).equals(Cart.key(id))) continue;
+                prefs.edit().remove("new:" + repo).putBoolean("newdone:" + repo, true).apply();
+                return ALREADY + nm;
+            }
             /* a file of that name is another game's (or the user's): a download never replaces it */
             if (doc != null && !repo.equalsIgnoreCase(repoFor(c, prefs, file))) return file + " is already in the games folder";
             boolean fresh = doc == null;
